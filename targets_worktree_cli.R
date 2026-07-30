@@ -11,17 +11,19 @@ source(file.path(root, "R", "targets_worktree_core.R"))
 usage <- function(status = 0L) {
   cat(
     "Usage:\n",
-    "  targets-worktree configure --project PATH --base PATH --mode MODE [options]\n",
+    "  targets-worktree configure --project PATH --base PATH [options]\n",
+    "  targets-worktree convert --project PATH --target NAME [--target NAME ...]\n",
     "  targets-worktree status --project PATH\n",
     "  targets-worktree reconcile --project PATH [--target NAME ...]\n",
     "  targets-worktree run --project PATH [--target NAME ...] [--local]\n",
     "  targets-worktree teardown --project PATH\n",
     "\n",
     "Configure options:\n",
-    "  --mode code|read-only|writable-selective\n",
     "  --source PATH       Immutable targets-store source; default: latest snapshot\n",
-    "  --target NAME       Endpoint target; repeat as needed\n",
     "  --link REL=SOURCE   Extra runtime symlink; repeat as needed\n",
+    "\n",
+    "Convert/run options:\n",
+    "  --target NAME       Endpoint target; repeat as needed\n",
     sep = ""
   )
   quit(status = status)
@@ -31,7 +33,6 @@ parse_options <- function(values) {
   output <- list(
     project = getwd(),
     base = NULL,
-    mode = NULL,
     source = NULL,
     target = character(),
     link = character(),
@@ -118,18 +119,23 @@ command <- arguments[[1L]]
 options <- parse_options(arguments[-1L])
 
 if (command == "configure") {
-  if (is.null(options$base) || is.null(options$mode)) {
-    stop("configure requires --base and --mode.")
+  if (is.null(options$base)) {
+    stop("configure requires --base.")
   }
   result <- shared_targets_worktree$configure(
     project = options$project,
     base = options$base,
-    mode = options$mode,
-    target_names = options$target,
     source = options$source,
     runtime_links = parse_links(options$link)
   )
   print_status(result)
+} else if (command == "convert") {
+  if (length(options$target) == 0L) {
+    stop("convert requires at least one --target.")
+  }
+  print_status(
+    shared_targets_worktree$convert(options$project, options$target)
+  )
 } else if (command == "status") {
   print_status(shared_targets_worktree$status(options$project))
 } else if (command == "reconcile") {

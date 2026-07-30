@@ -531,19 +531,12 @@ shared_targets_worktree <- local({
   configure <- function(
     project,
     base,
-    mode,
-    target_names = character(),
     source = NULL,
     runtime_links = character()
   ) {
     pair <- validate_project_pair(project, base)
     project <- pair$project
     base <- pair$base
-    mode <- match.arg(mode, c("code", "read-only", "writable-selective"))
-    target_names <- unique(target_names[nzchar(target_names)])
-    if (mode == "writable-selective" && length(target_names) == 0L) {
-      stop("writable-selective mode requires at least one endpoint target.")
-    }
 
     store_relative <- configured_store(project)
     base_store_relative <- configured_store(base)
@@ -590,10 +583,7 @@ shared_targets_worktree <- local({
       }
     }
 
-    source_path <- NULL
-    if (mode != "code") {
-      source_path <- resolve_source(base, store_relative, source)
-    }
+    source_path <- resolve_source(base, store_relative, source)
     state <- list(
       schema_version = 1L,
       id = create_id(),
@@ -601,10 +591,10 @@ shared_targets_worktree <- local({
       created_at = format(Sys.time(), tz = "UTC", usetz = TRUE),
       project = project,
       base = base,
-      mode = mode,
+      mode = "read-only",
       store_relative = store_relative,
       source = source_path,
-      targets = target_names,
+      targets = character(),
       closure = character(),
       outdated = character(),
       links = data.frame(),
@@ -642,36 +632,139 @@ shared_targets_worktree <- local({
       write_state(state)
     }
 
-    if (mode == "read-only") {
-      state$store_managed <- ensure_link(store, source_path)
-    } else if (mode == "writable-selective") {
-      ensure_link(store, source_path)
-      plan <- plan_snapshot(project, target_names, source_path)
-      state$stage <- file.path(
-        dirname(store),
-        paste0(".", basename(store), ".targets-worktree-stage-", state$id)
-      )
-      write_state(state)
-      materialize_plan(
-        project,
-        store_relative,
-        source_path,
-        plan,
-        state$stage
-      )
-      state$stage <- NULL
-      state$closure <- plan$closure
-      state$outdated <- plan$outdated
-      state$links <- plan$links
-      state$store_managed <- TRUE
-    } else {
-      state$store_managed <- FALSE
-    }
+    state$store_managed <- ensure_link(store, source_path)
 
     state$phase <- "ready"
     write_state(state)
     rollback <- FALSE
     status(project)
+  }
+
+  rollback_conversion <- function(project) {
+    state <- read_state(project)
+    store <- safe_destination(
+      state$project,
+      state$store_relative,
+      "Recorded targets store"
+    )
+
+    if (
+      !is.null(state$stage) &&
+        (file.exists(state$stage) || dir.exists(state$stage) ||
+          !is.na(link_value(state$stage)))
+    ) {
+      if (!dir.exists(state$stage) || !is.na(link_value(state$stage))) {
+        stop("Failed conversion left an unexpected staging path: ", state$stage)
+      }
+      state$quarantine <- c(
+        state$quarantine,
+        quarantine_path(state, state$stage, "failed-conversion-stage")
+      )
+    }
+
+    current <- link_value(store)
+    if (!is.na(current)) {
+      if (!same_path(store, state$source)) {
+        stop("Failed conversion left an unexpected targets-store symlink: ", store)
+      }
+    } else if (dir.exists(store)) {
+      state$quarantine <- c(
+        state$quarantine,
+        quarantine_path(state, store, "failed-conversion")
+      )
+      ensure_link(store, state$source)
+    } else if (file.exists(store)) {
+      stop("Failed conversion left an unexpected targets-store file: ", store)
+    } else {
+      ensure_link(store, state$source)
+    }
+
+    state$mode <- "read-only"
+    state$phase <- "ready"
+    state$targets <- character()
+    state$closure <- character()
+    state$outdated <- character()
+    state$links <- data.frame()
+    state$stage <- NULL
+    state$store_managed <- TRUE
+    write_state(state)
+    invisible(state)
+  }
+
+  convert <- function(project, target_names) {
+    state <- read_state(project)
+    if (!identical(state$phase, "ready") ||
+      !identical(state$mode, "read-only")) {
+      stop("Conversion requires a ready read-only worktree.")
+    }
+    target_names <- unique(target_names[nzchar(target_names)])
+    if (length(target_names) == 0L) {
+      stop("Conversion requires at least one endpoint target.")
+    }
+
+    store <- safe_destination(
+      state$project,
+      state$store_relative,
+      "Recorded targets store"
+    )
+    if (is.na(link_value(store)) || !same_path(store, state$source)) {
+      stop("Read-only store no longer links to its recorded source.")
+    }
+
+    # Planning is read-only. A planning failure therefore leaves the original
+    # worktree state and store link untouched.
+    plan <- plan_snapshot(state$project, target_names, state$source)
+    stage <- file.path(
+      dirname(store),
+      paste0(".", basename(store), ".targets-worktree-stage-", state$id)
+    )
+    if (file.exists(stage) || dir.exists(stage) || !is.na(link_value(stage))) {
+      stop("Conversion staging path already exists: ", stage)
+    }
+
+    state$mode <- "writable-selective"
+    state$phase <- "converting"
+    state$targets <- target_names
+    state$stage <- stage
+    write_state(state)
+
+    rollback <- TRUE
+    on.exit({
+      if (rollback) {
+        recovery_error <- tryCatch(
+          {
+            rollback_conversion(state$project)
+            NULL
+          },
+          error = identity
+        )
+        if (!is.null(recovery_error)) {
+          warning(
+            "Automatic conversion rollback failed; run teardown to recover: ",
+            conditionMessage(recovery_error),
+            call. = FALSE
+          )
+        }
+      }
+    }, add = TRUE)
+
+    materialize_plan(
+      state$project,
+      state$store_relative,
+      state$source,
+      plan,
+      stage
+    )
+    state$stage <- NULL
+    state$closure <- plan$closure
+    state$outdated <- plan$outdated
+    state$links <- plan$links
+    state$store_managed <- TRUE
+    state$phase <- "ready"
+    state$converted_at <- format(Sys.time(), tz = "UTC", usetz = TRUE)
+    write_state(state)
+    rollback <- FALSE
+    status(state$project)
   }
 
   owner_outdated <- function(links, outdated) {
@@ -882,8 +975,7 @@ shared_targets_worktree <- local({
       )
       write_state(state)
     } else if (
-      !identical(state$mode, "code") &&
-        (file.exists(store) || dir.exists(store) || !is.na(link_value(store)))
+      file.exists(store) || dir.exists(store) || !is.na(link_value(store))
     ) {
       stop("Targets-store path does not match recorded mode: ", store)
     }
@@ -945,6 +1037,7 @@ shared_targets_worktree <- local({
     configured_store = configured_store,
     latest_snapshot = latest_snapshot,
     configure = configure,
+    convert = convert,
     reconcile = reconcile,
     run = run,
     status = status,

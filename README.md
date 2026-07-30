@@ -12,13 +12,23 @@ The command manages the targets environment inside an existing Git worktree.
 Git remains responsible for creating, merging, and removing the worktree
 itself.
 
-## Modes
+## Lifecycle
 
-| Mode | Store | Use |
-|---|---|---|
-| `code` | Absent | Code editing and tests that need no cached targets |
-| `read-only` | Symlink to an immutable store snapshot | Inspection and `tar_read()` |
-| `writable-selective` | Writable metadata plus snapshot links for the requested up-to-date closure | Focused target development and execution |
+Every managed worktree follows one route:
+
+```text
+unconfigured -> read-only -> writable-selective -> teardown
+```
+
+`configure` always creates a read-only worktree whose configured store is a
+symlink to an immutable snapshot. This setup is cheap enough for code editing
+and immediately supports inspection and `tar_read()`. There is no separate
+code-only or bare mode.
+
+When target execution is needed, `convert` replaces that store link with
+writable metadata plus individually recorded snapshot links for the requested
+up-to-date dependency closure. Conversion preserves the worktree's Pixi and
+runtime-link setup.
 
 The base checkout and worktree must belong to the same Git repository and must
 configure the same relative targets store. The command refuses to configure the
@@ -33,8 +43,7 @@ SHARED_RUNTIME=/projects/cbmr_shared/people/tqb695/non-GDPR/shared-targets-runti
 
 "$SHARED_RUNTIME/worktree/targets-worktree" configure \
   --project /path/to/pipeline-worktree \
-  --base /path/to/pipeline \
-  --mode read-only
+  --base /path/to/pipeline
 ```
 
 The launcher:
@@ -47,30 +56,16 @@ The launcher:
 Set `TARGETS_WORKTREE_RSCRIPT=/path/to/Rscript` for projects that do not use
 Pixi.
 
-The lock covers setup, reconciliation, target execution, and teardown. Raw
-`tar_make()` bypasses this protection and is unsupported in
+The lock covers setup, conversion, reconciliation, target execution, and
+teardown. Raw `tar_make()` bypasses this protection and is unsupported in
 `writable-selective` mode.
 
-## Configure a code-only worktree
+## Configure a worktree
 
 ```bash
 "$SHARED_RUNTIME/worktree/targets-worktree" configure \
   --project /path/to/pipeline-worktree \
-  --base /path/to/pipeline \
-  --mode code
-```
-
-If the base has `.pixi`, the tool links it into the worktree. An existing
-symlink to that exact environment is accepted but not claimed as tool-owned.
-Other existing paths fail closed.
-
-## Configure read-only inspection
-
-```bash
-"$SHARED_RUNTIME/worktree/targets-worktree" configure \
-  --project /path/to/pipeline-worktree \
-  --base /path/to/pipeline \
-  --mode read-only
+  --base /path/to/pipeline
 ```
 
 By default, the command chooses the lexicographically latest complete store
@@ -83,37 +78,36 @@ under:
 Use an explicit source when needed:
 
 ```bash
-... configure ... --mode read-only --source /path/to/immutable/store
+... configure ... --source /path/to/immutable/store
 ```
 
 An explicit source must either be under a `.snapshot` path or have non-writable
 targets metadata. The live base store is always rejected.
 
-Read-only mode supports target inspection but filesystem permissions prevent
-pipeline writes.
+If the base has `.pixi`, the tool links it into the worktree. An existing
+symlink to that exact environment is accepted but not claimed as tool-owned.
+Other existing paths fail closed. The immutable store supports target
+inspection while refusing pipeline writes.
 
-## Configure a selective writable store
+## Convert to a selective writable store
 
 Supply one or more endpoint target names:
 
 ```bash
-"$SHARED_RUNTIME/worktree/targets-worktree" configure \
+"$SHARED_RUNTIME/worktree/targets-worktree" convert \
   --project /path/to/pipeline-worktree \
-  --base /path/to/pipeline \
-  --mode writable-selective \
   --target endpoint_a \
   --target endpoint_b
 ```
 
-Setup temporarily exposes the immutable snapshot at the configured store path,
-then:
+Conversion uses the already configured immutable snapshot to:
 
-1. computes the endpoints' dependency closure;
-2. calls `tar_outdated()` against the snapshot and current worktree code;
-3. copies only `meta/meta`;
-4. links reusable target objects and store-relative file outputs;
-5. leaves outdated outputs absent so `{targets}` writes them physically;
-6. references external absolute and repository-relative inputs without copying
+1. compute the endpoints' dependency closure;
+2. call `tar_outdated()` against the snapshot and current worktree code;
+3. copy only `meta/meta`;
+4. link reusable target objects and store-relative file outputs;
+5. leave outdated outputs absent so `{targets}` writes them physically;
+6. reference external absolute and repository-relative inputs without copying
    them.
 
 The final store is a physical writable directory. Snapshot-backed values inside
@@ -121,7 +115,10 @@ it are individually recorded symlinks.
 
 The configured endpoints bound the selective store. A later run may select all
 or a subset of them, but expanding the endpoint set requires teardown and
-reconfiguration.
+fresh read-only configuration followed by conversion. A failed planning step
+leaves the read-only setup unchanged. If materialization fails after mutation
+begins, the tool restores the read-only store link and quarantines any physical
+partial result.
 
 ## Guarded runs and reconciliation
 
@@ -232,7 +229,8 @@ pixi run --frozen \
 
 The test creates a disposable nested-store targets project and verifies:
 
-- code, read-only, and selective modes;
+- the read-only default and explicit selective conversion;
+- preservation of read-only state after failed conversion planning;
 - immutable source selection and live-store rejection;
 - exclusive launcher locking and foreign live-target PID rejection;
 - containment through existing symlink ancestors;

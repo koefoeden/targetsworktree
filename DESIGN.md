@@ -18,6 +18,24 @@ multiome target names, paths, or analysis logic.
 Git remains responsible for branches and worktree registration. This tool owns
 only the runtime environment inside an existing worktree.
 
+## Single lifecycle
+
+The public lifecycle has one route:
+
+```text
+unconfigured -> read-only -> writable-selective -> teardown
+```
+
+Configuration always links the configured store to an immutable snapshot.
+There is no code-only/bare setup and no direct writable setup. The read-only
+operation performs only configured-store discovery, immutable-source
+selection, runtime-link setup, and state recording, so a separate less-safe
+fast path would save little.
+
+Conversion is explicit and endpoint-scoped. It retains the configured Pixi
+environment, runtime links, source identity, and lifecycle record while
+replacing the whole-store snapshot link with a selective physical store.
+
 ## Safety invariants
 
 Every mutating operation must preserve these invariants:
@@ -34,20 +52,20 @@ Every mutating operation must preserve these invariants:
 7. Only symlinks recorded by this setup are removed, and only while they still
    resolve to their recorded source.
 8. Writable stores are quarantined, never deleted, during teardown.
-9. Setup, reconciliation, execution, and teardown are mutually exclusive for
-   each worktree.
+9. Setup, conversion, reconciliation, execution, and teardown are mutually
+   exclusive for each worktree.
 10. No operation promotes or deletes values in the base targets store.
 
 The state record is stored in the worktree-specific Git administration
 directory. It therefore cannot be mistaken for pipeline output, copied into a
 selective store, or committed.
 
-## Selective-store algorithm
+## Selective-store conversion
 
-Initial setup links the configured worktree store path to an immutable
-snapshot. This temporary view is important: `tar_outdated()` must be able to
-resolve store-relative file targets while comparing the current worktree code
-with snapshot metadata.
+Read-only configuration links the worktree store path to an immutable
+snapshot. Conversion plans against this view because `tar_outdated()` must be
+able to resolve store-relative file targets while comparing the current
+worktree code with snapshot metadata.
 
 The planner then:
 
@@ -66,9 +84,11 @@ and project-relative inputs remain where they are. Outdated outputs remain
 absent.
 
 The store is constructed in a recorded staging directory and atomically renamed
-into place. Ordinary R errors remove the setup-only staging data. If the
-process dies abruptly, the persistent state identifies the exact staging path
-so teardown can quarantine it.
+into place. Planning failures occur before the state transition and leave the
+read-only worktree unchanged. After the transition begins, ordinary R errors
+restore the snapshot link and quarantine physical partial results. If the
+process dies abruptly, the persistent `converting` state identifies the exact
+staging path so teardown can quarantine it.
 
 ## Reconciliation
 
@@ -92,7 +112,7 @@ The reconciler handles each recorded destination as follows:
 If no managed links remain, there is nothing that can write through to the
 snapshot, so the separate pre-run `tar_outdated()` scan is skipped.
 
-The endpoint set is intentionally fixed at configuration time. Supporting
+The endpoint set is intentionally fixed at conversion time. Supporting
 arbitrary expansion would require comparing the current mixed scratch store,
 the snapshot, and potentially newer physical results. Reconfiguration is
 simpler and unambiguous.
@@ -156,7 +176,8 @@ a local lower directory but failed to copy up from the Isilon/NFS store with
 target-aware link view therefore avoids relying on unavailable filesystem
 features.
 
-The generic integration test proves nested-store discovery, all three modes,
+The generic integration test proves nested-store discovery, the read-only
+default and explicit conversion, preservation after failed conversion planning,
 lock exclusion, foreign process rejection, live-store and escaping-path
 rejection, object/file/dynamic-branch reuse, changed file and branch
 reconciliation, unchanged immutable checksums, and quarantine.

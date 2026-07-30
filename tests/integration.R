@@ -112,12 +112,11 @@ invisible(cli(
   "configure",
   "--project", worktree,
   "--base", base,
-  "--mode", "code",
   "--link", paste0("runtime-link=", runtime_source)
 ))
 state <- shared_targets_worktree$read_state(worktree)
-stopifnot(identical(state$mode, "code"))
-stopifnot(!dir.exists(file.path(worktree, "pipeline", "outputs")))
+stopifnot(identical(state$mode, "read-only"))
+stopifnot(nzchar(Sys.readlink(file.path(worktree, "pipeline", "outputs"))))
 stopifnot(identical(
   normalizePath(file.path(worktree, "runtime-link")),
   normalizePath(runtime_source)
@@ -132,7 +131,6 @@ invisible(cli(
   "configure",
   "--project", worktree,
   "--base", base,
-  "--mode", "code",
   "--link", paste0("adopted-link=", runtime_source)
 ))
 stopifnot(!shared_targets_worktree$read_state(worktree)$runtime_links$managed)
@@ -146,7 +144,6 @@ live_source_status <- suppressWarnings(system2(
     "configure",
     "--project", worktree,
     "--base", base,
-    "--mode", "read-only",
     "--source", base_store
   ),
   stdout = TRUE,
@@ -164,8 +161,7 @@ conflict_status <- suppressWarnings(system2(
   c(
     "configure",
     "--project", worktree,
-    "--base", base,
-    "--mode", "code"
+    "--base", base
   ),
   stdout = TRUE,
   stderr = TRUE,
@@ -184,7 +180,6 @@ escape_status <- suppressWarnings(system2(
     "configure",
     "--project", worktree,
     "--base", base,
-    "--mode", "code",
     "--link", paste0("escape/new-link=", runtime_source)
   ),
   stdout = TRUE,
@@ -198,8 +193,7 @@ unlink(file.path(worktree, "escape"))
 invisible(cli(
   "configure",
   "--project", worktree,
-  "--base", base,
-  "--mode", "read-only"
+  "--base", base
 ))
 store <- file.path(worktree, "pipeline", "outputs")
 stopifnot(nzchar(Sys.readlink(store)))
@@ -232,14 +226,34 @@ stopifnot(!is.null(attr(locked_status, "status")))
 invisible(holder$kill_tree())
 invisible(holder$wait(timeout = 1000))
 
+failed_conversion <- suppressWarnings(system2(
+  launcher,
+  c(
+    "convert",
+    "--project", worktree,
+    "--target", "target_that_does_not_exist"
+  ),
+  stdout = TRUE,
+  stderr = TRUE,
+  env = paste0("TARGETS_WORKTREE_RSCRIPT=", rscript)
+))
+stopifnot(!is.null(attr(failed_conversion, "status")))
+state <- shared_targets_worktree$read_state(worktree)
+stopifnot(identical(state$mode, "read-only"))
+stopifnot(identical(state$phase, "ready"))
+stopifnot(nzchar(Sys.readlink(store)))
+
 invisible(cli("teardown", "--project", worktree))
 stopifnot(!file.exists(store) && !dir.exists(store))
 
 invisible(cli(
   "configure",
   "--project", worktree,
-  "--base", base,
-  "--mode", "writable-selective",
+  "--base", base
+))
+invisible(cli(
+  "convert",
+  "--project", worktree,
   "--target", "large"
 ))
 state <- shared_targets_worktree$read_state(worktree)
@@ -250,8 +264,11 @@ invisible(cli("teardown", "--project", worktree))
 invisible(cli(
   "configure",
   "--project", worktree,
-  "--base", base,
-  "--mode", "writable-selective",
+  "--base", base
+))
+invisible(cli(
+  "convert",
+  "--project", worktree,
   "--target", "result",
   "--target", "branch_sum"
 ))
@@ -352,7 +369,8 @@ stopifnot(is.null(shared_targets_worktree$read_state(worktree, required = FALSE)
 cat(
   "targets-worktree integration passed\n",
   "  configured nested store: yes\n",
-  "  code/read-only/selective modes: yes\n",
+  "  read-only default and selective conversion: yes\n",
+  "  failed conversion planning preserves read-only state: yes\n",
   "  managed/adopted runtime links: yes\n",
   "  live source and conflicting path refused: yes\n",
   "  escaping symlink ancestor refused: yes\n",
