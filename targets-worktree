@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+project=$PWD
+base=
+arguments=("$@")
+
+for ((index = 0; index < ${#arguments[@]}; index++)); do
+  case ${arguments[$index]} in
+    --project)
+      ((index + 1 < ${#arguments[@]})) || die "--project requires a value"
+      project=${arguments[$((index + 1))]}
+      ;;
+    --base)
+      ((index + 1 < ${#arguments[@]})) || die "--base requires a value"
+      base=${arguments[$((index + 1))]}
+      ;;
+  esac
+done
+
+project=$(git -C "$project" rev-parse --show-toplevel 2>/dev/null) ||
+  die "project is not a Git worktree: $project"
+project=$(cd "$project" && pwd -P)
+
+git_state=$(git -C "$project" rev-parse \
+  --path-format=absolute --git-path targets-worktree)
+mkdir -p "$git_state"
+lock=$git_state/lock
+
+runner_project=${base:-$project}
+runner_project=$(git -C "$runner_project" rev-parse --show-toplevel 2>/dev/null) ||
+  die "runner project is not a Git worktree: $runner_project"
+runner_project=$(cd "$runner_project" && pwd -P)
+
+if [ -n "${TARGETS_WORKTREE_RSCRIPT:-}" ]; then
+  runner=("$TARGETS_WORKTREE_RSCRIPT")
+elif [ -f "$runner_project/pixi.toml" ]; then
+  command -v pixi >/dev/null || die "pixi is required for this project"
+  runner=(
+    pixi run --frozen --manifest-path "$runner_project/pixi.toml"
+    Rscript
+  )
+else
+  command -v Rscript >/dev/null || die "Rscript is not available"
+  runner=(Rscript)
+fi
+
+exec 9>"$lock"
+flock -n 9 || die "another targets-worktree operation is active for $project"
+export TARGETS_WORKTREE_LOCK_HELD=1
+export TARGETS_WORKTREE_ROOT=$script_dir
+cd "$project"
+exec "${runner[@]}" "$script_dir/targets_worktree_cli.R" "$@"
