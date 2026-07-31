@@ -44,6 +44,14 @@ writeLines(
   ),
   file.path(base, "_targets.yaml")
 )
+writeLines(
+  paste(
+    "if (!file.exists('pipeline/outputs') &&",
+    "!dir.exists('pipeline/outputs'))",
+    "dir.create('pipeline/outputs', recursive = TRUE)"
+  ),
+  file.path(base, ".Rprofile")
+)
 base_script <- c(
   "library(targets)",
   "list(",
@@ -69,7 +77,7 @@ base_script <- c(
 writeLines(base_script, file.path(base, "_targets.R"))
 invisible(run(c(
   "git", "-C", base, "add",
-  ".gitignore", "_targets.yaml", "_targets.R"
+  ".gitignore", ".Rprofile", "_targets.yaml", "_targets.R"
 )))
 invisible(run(c("git", "-C", base, "commit", "-m", "test project")))
 invisible(run(c(

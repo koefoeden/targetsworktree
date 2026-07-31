@@ -51,6 +51,10 @@ else
   runner=(Rscript)
 fi
 
+if [ "${arguments[0]-}" = configure ]; then
+  runner+=(--no-init-file)
+fi
+
 exec 9>"$lock"
 flock -n 9 || die "another targets-worktree operation is active for $project"
 export TARGETS_WORKTREE_LOCK_HELD=1
