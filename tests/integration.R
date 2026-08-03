@@ -87,11 +87,30 @@ invisible(run(c(
 withr::with_dir(base, targets::tar_make(reporter = "silent"))
 base_store <- file.path(base, "pipeline", "outputs")
 snapshot <- file.path(base_store, ".snapshot", "snapshot-001")
-dir.create(snapshot, recursive = TRUE)
-for (path in c("meta", "objects", "files")) {
-  stopifnot(file.copy(file.path(base_store, path), snapshot, recursive = TRUE))
+create_snapshot <- function(path) {
+  dir.create(path, recursive = TRUE)
+  for (store_path in c("meta", "objects", "files")) {
+    stopifnot(
+      file.copy(file.path(base_store, store_path), path, recursive = TRUE)
+    )
+  }
+  stopifnot(system2("chmod", c("-R", "a-w", path)) == 0L)
 }
-stopifnot(system2("chmod", c("-R", "a-w", snapshot)) == 0L)
+create_snapshot(snapshot)
+daily_snapshot_old <- file.path(
+  base_store,
+  ".snapshot",
+  "daily-2026-07-29"
+)
+daily_snapshot_new <- file.path(
+  base_store,
+  ".snapshot",
+  "daily-2026-07-30"
+)
+replication_snapshot <- file.path(base_store, ".snapshot", "SIQ-replication-new")
+create_snapshot(daily_snapshot_old)
+create_snapshot(daily_snapshot_new)
+create_snapshot(replication_snapshot)
 snapshot_meta_checksum <- unname(tools::md5sum(file.path(snapshot, "meta", "meta")))
 snapshot_input_checksum <- unname(
   tools::md5sum(file.path(snapshot, "files", "input.txt"))
@@ -133,6 +152,53 @@ invisible(cli("teardown", "--project", worktree))
 stopifnot(is.null(shared_targets_worktree$read_state(worktree, required = FALSE)))
 stopifnot(!file.exists(file.path(worktree, "runtime-link")))
 stopifnot(identical(readLines(runtime_source), "runtime"))
+
+snapshot_pattern <- "^daily-[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+pattern_status <- cli(
+  "configure",
+  "--project", worktree,
+  "--base", base,
+  "--snapshot-pattern", snapshot_pattern
+)
+state <- shared_targets_worktree$read_state(worktree)
+stopifnot(identical(state$source, normalizePath(daily_snapshot_new)))
+stopifnot(identical(state$snapshot_pattern, snapshot_pattern))
+stopifnot(any(grepl("^snapshot pattern:", pattern_status)))
+invisible(cli("teardown", "--project", worktree))
+
+missing_pattern_status <- suppressWarnings(system2(
+  launcher,
+  c(
+    "configure",
+    "--project", worktree,
+    "--base", base,
+    "--snapshot-pattern", "^missing-family-"
+  ),
+  stdout = TRUE,
+  stderr = TRUE,
+  env = paste0("TARGETS_WORKTREE_RSCRIPT=", rscript)
+))
+stopifnot(!is.null(attr(missing_pattern_status, "status")))
+stopifnot(any(grepl("matching pattern", missing_pattern_status, fixed = TRUE)))
+stopifnot(is.null(shared_targets_worktree$read_state(worktree, required = FALSE)))
+stopifnot(!file.exists(file.path(worktree, "pipeline", "outputs")))
+
+source_and_pattern_status <- suppressWarnings(system2(
+  launcher,
+  c(
+    "configure",
+    "--project", worktree,
+    "--base", base,
+    "--source", snapshot,
+    "--snapshot-pattern", "^snapshot-"
+  ),
+  stdout = TRUE,
+  stderr = TRUE,
+  env = paste0("TARGETS_WORKTREE_RSCRIPT=", rscript)
+))
+stopifnot(!is.null(attr(source_and_pattern_status, "status")))
+stopifnot(any(grepl("either an explicit source", source_and_pattern_status)))
+stopifnot(is.null(shared_targets_worktree$read_state(worktree, required = FALSE)))
 
 stopifnot(file.symlink(runtime_source, file.path(worktree, "adopted-link")))
 invisible(cli(

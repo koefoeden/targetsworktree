@@ -265,24 +265,72 @@ shared_targets_worktree <- local({
 
   # Immutable source discovery and selective-store planning --------------------
 
-  latest_snapshot <- function(base_store) {
+  latest_snapshot <- function(base_store, snapshot_pattern = NULL) {
     snapshot_root <- file.path(base_store, ".snapshot")
     if (!dir.exists(snapshot_root)) {
       stop("No snapshot directory exists under the base store: ", snapshot_root)
     }
-    candidates <- list.dirs(snapshot_root, recursive = FALSE, full.names = TRUE)
-    candidates <- candidates[
-      file.exists(file.path(candidates, "meta", "meta"))
-    ]
+    if (!is.null(snapshot_pattern)) {
+      if (
+        !is.character(snapshot_pattern) ||
+          length(snapshot_pattern) != 1L ||
+          is.na(snapshot_pattern) ||
+          !nzchar(snapshot_pattern)
+      ) {
+        stop("Snapshot pattern must be one non-empty regular expression.")
+      }
+      tryCatch(
+        suppressWarnings(grepl(snapshot_pattern, "", perl = TRUE)),
+        error = function(error) {
+          stop("Invalid snapshot pattern: ", conditionMessage(error))
+        }
+      )
+    }
+
+    for (attempt in seq_len(3L)) {
+      candidates <- list.dirs(snapshot_root, recursive = FALSE, full.names = TRUE)
+      if (!is.null(snapshot_pattern)) {
+        candidates <- candidates[
+          grepl(snapshot_pattern, basename(candidates), perl = TRUE)
+        ]
+      }
+      candidates <- candidates[
+        file.exists(file.path(candidates, "meta", "meta"))
+      ]
+      if (length(candidates) > 0L || attempt == 3L) {
+        break
+      }
+      Sys.sleep(0.2 * attempt)
+    }
     if (length(candidates) == 0L) {
-      stop("No complete targets-store snapshot was found under: ", snapshot_root)
+      qualifier <- if (is.null(snapshot_pattern)) {
+        ""
+      } else {
+        paste0(" matching pattern ", shQuote(snapshot_pattern))
+      }
+      stop(
+        "No complete targets-store snapshot", qualifier,
+        " was found under: ", snapshot_root
+      )
     }
     normalizePath(tail(sort(candidates), 1L), mustWork = TRUE)
   }
 
-  resolve_source <- function(base, store_relative, source = NULL) {
+  resolve_source <- function(
+    base,
+    store_relative,
+    source = NULL,
+    snapshot_pattern = NULL
+  ) {
     base_store <- file.path(base, store_relative)
-    source <- if (is.null(source)) latest_snapshot(base_store) else source
+    if (!is.null(source) && !is.null(snapshot_pattern)) {
+      stop("Use either an explicit source or a snapshot pattern, not both.")
+    }
+    source <- if (is.null(source)) {
+      latest_snapshot(base_store, snapshot_pattern)
+    } else {
+      source
+    }
     source <- normalize_directory(source, "Immutable targets-store source")
     if (!file.exists(file.path(source, "meta", "meta"))) {
       stop("Targets metadata is missing from source: ", source)
@@ -532,6 +580,7 @@ shared_targets_worktree <- local({
     project,
     base,
     source = NULL,
+    snapshot_pattern = NULL,
     runtime_links = character()
   ) {
     pair <- validate_project_pair(project, base)
@@ -583,7 +632,12 @@ shared_targets_worktree <- local({
       }
     }
 
-    source_path <- resolve_source(base, store_relative, source)
+    source_path <- resolve_source(
+      base,
+      store_relative,
+      source,
+      snapshot_pattern
+    )
     state <- list(
       schema_version = 1L,
       id = create_id(),
@@ -594,6 +648,7 @@ shared_targets_worktree <- local({
       mode = "read-only",
       store_relative = store_relative,
       source = source_path,
+      snapshot_pattern = snapshot_pattern,
       targets = character(),
       closure = character(),
       outdated = character(),
@@ -1025,6 +1080,7 @@ shared_targets_worktree <- local({
       phase = state$phase,
       store = store,
       source = state$source,
+      snapshot_pattern = state$snapshot_pattern,
       targets = state$targets,
       closure_targets = length(state$closure),
       outdated_targets = length(state$outdated),

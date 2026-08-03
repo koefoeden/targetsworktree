@@ -19,8 +19,9 @@ usage <- function(status = 0L) {
     "  targets-worktree teardown --project PATH\n",
     "\n",
     "Configure options:\n",
-    "  --source PATH       Immutable targets-store source; default: latest snapshot\n",
-    "  --link REL=SOURCE   Extra runtime symlink; repeat as needed\n",
+    "  --source PATH              Immutable targets-store source\n",
+    "  --snapshot-pattern REGEX   Restrict automatic snapshot discovery by name\n",
+    "  --link REL=SOURCE          Extra runtime symlink; repeat as needed\n",
     "\n",
     "Convert/run options:\n",
     "  --target NAME       Endpoint target; repeat as needed\n",
@@ -34,6 +35,7 @@ parse_options <- function(values) {
     project = getwd(),
     base = NULL,
     source = NULL,
+    snapshot_pattern = NULL,
     target = character(),
     link = character(),
     local = FALSE
@@ -45,6 +47,9 @@ parse_options <- function(values) {
       stop("Unexpected argument: ", option)
     }
     name <- substring(option, 3L)
+    if (name == "snapshot-pattern") {
+      name <- "snapshot_pattern"
+    }
     if (!name %in% names(output)) {
       stop("Unknown option: ", option)
     }
@@ -91,11 +96,15 @@ parse_links <- function(values) {
 }
 
 print_status <- function(value) {
-  scalar <- c("project", "base", "mode", "phase", "store", "source")
+  scalar <- c(
+    "project", "base", "mode", "phase", "store", "source",
+    "snapshot_pattern"
+  )
   for (name in scalar) {
     item <- value[[name]]
     if (!is.null(item)) {
-      cat(sprintf("%-18s %s\n", paste0(name, ":"), paste(item, collapse = ", ")))
+      label <- gsub("_", " ", name, fixed = TRUE)
+      cat(sprintf("%-18s %s\n", paste0(label, ":"), paste(item, collapse = ", ")))
     }
   }
   cat(sprintf("%-18s %s\n", "targets:", paste(value$targets, collapse = ", ")))
@@ -126,6 +135,7 @@ if (command == "configure") {
     project = options$project,
     base = options$base,
     source = options$source,
+    snapshot_pattern = options$snapshot_pattern,
     runtime_links = parse_links(options$link)
   )
   print_status(result)

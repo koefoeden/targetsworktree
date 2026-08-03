@@ -75,6 +75,25 @@ under:
 <base configured store>/.snapshot/*
 ```
 
+When that directory contains multiple snapshot families, restrict discovery to
+one lexicographically sortable name family with a regular expression:
+
+```bash
+... configure \
+  ... \
+  --snapshot-pattern '^daily-[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+```
+
+Discovery retries a transient empty listing three times. If no complete
+snapshot matches the pattern, configuration fails rather than falling back to
+another snapshot family.
+
+The CBMR Isilon daily-policy pattern is:
+
+```bash
+--snapshot-pattern '^60-Research-daily-20D-[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}:[0-9]{2}$'
+```
+
 Use an explicit source when needed:
 
 ```bash
@@ -82,7 +101,8 @@ Use an explicit source when needed:
 ```
 
 An explicit source must either be under a `.snapshot` path or have non-writable
-targets metadata. The live base store is always rejected.
+targets metadata. The live base store is always rejected. `--source` and
+`--snapshot-pattern` are mutually exclusive.
 
 If the base has `.pixi`, the tool links it into the worktree. An existing
 symlink to that exact environment is accepted but not claimed as tool-owned.

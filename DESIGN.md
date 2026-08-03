@@ -56,6 +56,11 @@ Every mutating operation must preserve these invariants:
    exclusive for each worktree.
 10. No operation promotes or deletes values in the base targets store.
 
+Automatic snapshot discovery may be restricted to one caller-supplied regular
+expression. A pattern with no complete match fails closed and never falls back
+to another storage-managed snapshot namespace. Brief retries accommodate
+transient empty directory listings from virtual snapshot directories.
+
 The state record is stored in the worktree-specific Git administration
 directory. It therefore cannot be mistaken for pipeline output, copied into a
 selective store, or committed.
