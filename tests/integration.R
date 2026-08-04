@@ -135,6 +135,17 @@ cli <- function(...) {
   output
 }
 
+unconfigured_status <- suppressWarnings(system2(
+  launcher,
+  c("status", "--project", worktree),
+  stdout = TRUE,
+  stderr = TRUE,
+  env = paste0("TARGETS_WORKTREE_RSCRIPT=", rscript)
+))
+stopifnot(!is.null(attr(unconfigured_status, "status")))
+stopifnot(any(grepl("No targets-worktree state exists", unconfigured_status)))
+stopifnot(!file.exists(file.path(worktree, "pipeline", "outputs")))
+
 invisible(cli(
   "configure",
   "--project", worktree,

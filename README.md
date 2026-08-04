@@ -249,6 +249,7 @@ pixi run --frozen \
 
 The test creates a disposable nested-store targets project and verifies:
 
+- side-effect-free status checks before configuration;
 - the read-only default and explicit selective conversion;
 - preservation of read-only state after failed conversion planning;
 - immutable source selection and live-store rejection;

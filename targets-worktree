@@ -30,6 +30,9 @@ project=$(cd "$project" && pwd -P)
 
 git_state=$(git -C "$project" rev-parse \
   --path-format=absolute --git-path targets-worktree)
+if [ "${arguments[0]-}" = status ] && [ ! -f "$git_state/state.rds" ]; then
+  die "No targets-worktree state exists for: $project"
+fi
 mkdir -p "$git_state"
 lock=$git_state/lock
 
@@ -51,7 +54,7 @@ else
   runner=(Rscript)
 fi
 
-if [ "${arguments[0]-}" = configure ]; then
+if [ "${arguments[0]-}" = configure ] || [ "${arguments[0]-}" = status ]; then
   runner+=(--no-init-file)
 fi
 
