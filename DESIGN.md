@@ -13,7 +13,7 @@ contracts are common to `{targets}` pipelines:
 
 A downstream pipeline supplies only its own `_targets.yaml`, Pixi environment,
 endpoint targets, and optional runtime links. The implementation contains no
-multiome target names, paths, or analysis logic.
+project-specific target names, paths, or analysis logic.
 
 Git remains responsible for branches and worktree registration. This tool owns
 only the runtime environment inside an existing worktree.
@@ -162,49 +162,16 @@ An RDS receipt is written before active state is removed. The command never
 invokes `git worktree remove`; Git can remove the clean, unconfigured worktree
 normally afterward.
 
-## Feasibility evidence
+## Rationale and validation
 
-The original private-pipeline helpers hard-coded `outputs/`, while the live
-pipeline configures `pipelines/processing_and_aggregation/outputs`. Central
-configured-store discovery removes that stale-path class of error.
+Target-aware links avoid copying complete stores and do not depend on a
+filesystem copy-on-write layer. Configured-store discovery also avoids assuming
+a conventional store name.
 
-Read-only measurements on the real pipeline found:
-
-- 12,633 manifest rows;
-- 41,653 metadata rows;
-- 3,118 target vertices and 5,575 edges in a representative muscle
-  genetic-enrichment endpoint closure;
-- about 18.42 GB of target objects and 506 GB of store-relative file targets
-  even for that static closure;
-- roughly 39 GB transferred while a conventional complete store copy still
-  reported about 1% progress.
-
-A transparent filesystem copy-on-write layer was tested. OverlayFS worked with
-a local lower directory but failed to copy up from the Isilon/NFS store with
-`Value too large for defined data type`. `/dev/fuse` was unavailable. The
-target-aware link view therefore avoids relying on unavailable filesystem
-features.
-
-The generic integration test proves nested-store discovery, the read-only
-default and explicit conversion, preservation after failed conversion planning,
-lock exclusion, foreign process rejection, live-store and escaping-path
-rejection, object/file/dynamic-branch reuse, changed file and branch
-reconciliation, unchanged immutable checksums, and quarantine.
-
-A real `multiome-pipeline` smoke test additionally demonstrated:
-
-- automatic selection of the latest Isilon snapshot;
-- read-only `tar_read_raw()` through the configured nested store;
-- a one-target selective store containing only physical metadata because the
-  target was already outdated;
-- a guarded head-node rebuild of
-  `interesting_genes.FLINC_test`;
-- a worktree-only command change reflected in the rebuilt result;
-- unchanged snapshot metadata and object checksums;
-- writable-store quarantine followed by clean, non-forced Git worktree
-  removal;
-- no interruption or mutation of the concurrently running base pipeline or its
-  live store.
+The integration test is the executable contract. It covers nested stores,
+snapshot selection, read-only inspection, selective object and file reuse,
+dynamic branches, reconciliation, lock and process exclusion, path containment,
+rollback, immutable-source checksums, and quarantine-first teardown.
 
 ## Deliberate boundaries
 
@@ -213,8 +180,4 @@ A real `multiome-pipeline` smoke test additionally demonstrated:
 - Store promotion is not implemented. Merge code and rerun targets in the base
   pipeline; absence in a selective store never means deletion from the base.
 - Git worktree and branch creation/removal remain Git operations.
-- Plan construction still pays the pipeline's graph-loading cost. On the real
-  pipeline this was several minutes, although it avoided hundreds of gigabytes
-  of copying. A future plan cache would need a defensible fingerprint over the
-  pipeline script, sourced helpers, configuration, endpoint set, snapshot
-  identity, and `{targets}` version before it could safely skip evaluation.
+- Plan construction evaluates the pipeline graph; no plan cache is implemented.

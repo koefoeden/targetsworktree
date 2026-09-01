@@ -7,4 +7,5 @@ worktree and branch creation or removal.
 Keep the implementation pipeline-independent. Do not add project target names,
 store paths, snapshot policies, or analysis logic.
 
-Run `R CMD check --no-manual` and `tests/integration.R` after lifecycle changes.
+Run `R CMD check --no-manual`; package checks include the lifecycle integration
+test.

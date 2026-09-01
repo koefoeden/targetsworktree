@@ -4,7 +4,6 @@ targets_worktree_usage <- function() {
     "  targets-worktree configure --project PATH --base PATH [options]\n",
     "  targets-worktree convert --project PATH --target NAME [--target NAME ...]\n",
     "  targets-worktree status --project PATH\n",
-    "  targets-worktree reconcile --project PATH [--target NAME ...]\n",
     "  targets-worktree run --project PATH [--target NAME ...] [--local]\n",
     "  targets-worktree teardown --project PATH\n",
     "\n",
@@ -107,13 +106,6 @@ print_targets_worktree_status <- function(value) {
   invisible(value)
 }
 
-#' Run the targets-worktree command-line interface
-#'
-#' This entry point is called by the installed `targets-worktree` launcher.
-#'
-#' @param arguments Command-line arguments.
-#' @return `NULL`, invisibly.
-#' @export
 targets_worktree_cli <- function(arguments = commandArgs(trailingOnly = TRUE)) {
   if (length(arguments) == 0L || arguments[[1L]] %in% c("-h", "--help", "help")) {
     targets_worktree_usage()
@@ -128,7 +120,7 @@ targets_worktree_cli <- function(arguments = commandArgs(trailingOnly = TRUE)) {
     if (is.null(options$base)) {
       stop("configure requires --base.")
     }
-    result <- targets_worktree_configure(
+    result <- configure(
       project = options$project,
       base = options$base,
       source = options$source,
@@ -141,26 +133,19 @@ targets_worktree_cli <- function(arguments = commandArgs(trailingOnly = TRUE)) {
       stop("convert requires at least one --target.")
     }
     print_targets_worktree_status(
-      targets_worktree_convert(options$project, options$target)
+      convert(options$project, options$target)
     )
   } else if (command == "status") {
-    print_targets_worktree_status(targets_worktree_status(options$project))
-  } else if (command == "reconcile") {
-    result <- targets_worktree_reconcile(
-      options$project,
-      if (length(options$target) == 0L) NULL else options$target
-    )
-    cat("outdated targets:", paste(result$outdated, collapse = ", "), "\n")
-    print_targets_worktree_status(targets_worktree_status(options$project))
+    print_targets_worktree_status(status(options$project))
   } else if (command == "run") {
-    targets_worktree_run(
+    run(
       options$project,
       if (length(options$target) == 0L) NULL else options$target,
       local = options$local
     )
-    print_targets_worktree_status(targets_worktree_status(options$project))
+    print_targets_worktree_status(status(options$project))
   } else if (command == "teardown") {
-    result <- targets_worktree_teardown(options$project)
+    result <- teardown(options$project)
     cat("mode:", result$mode, "\n")
     if (!is.null(result$quarantine)) {
       for (path in result$quarantine) {

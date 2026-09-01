@@ -6,7 +6,7 @@ pipeline-independent and reads the store path from the worktree's
 `_targets.yaml` through `targets::tar_config_get("store")`.
 
 See [DESIGN.md](DESIGN.md) for the safety invariants, reconciliation rules,
-failure recovery, feasibility measurements, and deliberate boundaries.
+failure recovery, rationale, and deliberate boundaries.
 
 The command manages the targets environment inside an existing Git worktree.
 Git remains responsible for creating, merging, and removing the worktree
@@ -23,7 +23,7 @@ target execution; every configuration attaches a targets store.
 Install a tagged version from the private GitHub repository:
 
 ```r
-remotes::install_github("koefoeden/targetsworktree@v0.1.0")
+remotes::install_github("koefoeden/targetsworktree@v0.1.1")
 ```
 
 The R environment used by the base checkout must contain `targetsworktree` and
@@ -54,8 +54,8 @@ base checkout itself.
 
 ## Launcher
 
-Resolve and use the installed executable rather than calling the R API
-directly:
+Resolve and use the installed executable. Lifecycle functions are deliberately
+internal because the shell launcher owns locking:
 
 ```bash
 targets_worktree_tool=$(Rscript --vanilla -e \

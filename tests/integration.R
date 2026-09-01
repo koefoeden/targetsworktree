@@ -1,7 +1,4 @@
-shared_targets_worktree <- getFromNamespace(
-  "targets_worktree_core",
-  "targetsworktree"
-)
+read_state <- getFromNamespace("read_state", "targetsworktree")
 Sys.unsetenv(c("R_PROFILE_USER", "R_TESTS"))
 
 run <- function(command) {
@@ -55,7 +52,7 @@ base_script <- c(
   "library(targets)",
   "list(",
   "  tar_target(seed, 2L),",
-  "  tar_target(large, rep(seed, 100000L)),",
+  "  tar_target(large, rep(seed, 1000L)),",
   "  tar_target(",
   "    input_file,",
   "    {",
@@ -70,7 +67,7 @@ base_script <- c(
   "  tar_target(numbers, c(1L, 2L), iteration = 'vector'),",
   "  tar_target(branch, numbers * 2L, pattern = map(numbers)),",
   "  tar_target(branch_sum, sum(unlist(branch))),",
-  "  tar_target(unrelated, runif(1000000L))",
+  "  tar_target(unrelated, runif(1000L))",
   ")"
 )
 writeLines(base_script, file.path(base, "_targets.R"))
@@ -151,7 +148,7 @@ invisible(cli(
   "--base", base,
   "--link", paste0("runtime-link=", runtime_source)
 ))
-state <- shared_targets_worktree$read_state(worktree)
+state <- read_state(worktree)
 stopifnot(identical(state$mode, "read-only"))
 stopifnot(nzchar(Sys.readlink(file.path(worktree, "pipeline", "outputs"))))
 stopifnot(identical(
@@ -159,7 +156,7 @@ stopifnot(identical(
   normalizePath(runtime_source)
 ))
 invisible(cli("teardown", "--project", worktree))
-stopifnot(is.null(shared_targets_worktree$read_state(worktree, required = FALSE)))
+stopifnot(is.null(read_state(worktree, required = FALSE)))
 stopifnot(!file.exists(file.path(worktree, "runtime-link")))
 stopifnot(identical(readLines(runtime_source), "runtime"))
 
@@ -170,7 +167,7 @@ pattern_status <- cli(
   "--base", base,
   "--snapshot-pattern", snapshot_pattern
 )
-state <- shared_targets_worktree$read_state(worktree)
+state <- read_state(worktree)
 stopifnot(identical(state$source, normalizePath(daily_snapshot_new)))
 stopifnot(identical(state$snapshot_pattern, snapshot_pattern))
 stopifnot(any(grepl("^snapshot pattern:", pattern_status)))
@@ -190,7 +187,7 @@ missing_pattern_status <- suppressWarnings(system2(
 ))
 stopifnot(!is.null(attr(missing_pattern_status, "status")))
 stopifnot(any(grepl("matching pattern", missing_pattern_status, fixed = TRUE)))
-stopifnot(is.null(shared_targets_worktree$read_state(worktree, required = FALSE)))
+stopifnot(is.null(read_state(worktree, required = FALSE)))
 stopifnot(!file.exists(file.path(worktree, "pipeline", "outputs")))
 
 source_and_pattern_status <- suppressWarnings(system2(
@@ -208,7 +205,7 @@ source_and_pattern_status <- suppressWarnings(system2(
 ))
 stopifnot(!is.null(attr(source_and_pattern_status, "status")))
 stopifnot(any(grepl("either an explicit source", source_and_pattern_status)))
-stopifnot(is.null(shared_targets_worktree$read_state(worktree, required = FALSE)))
+stopifnot(is.null(read_state(worktree, required = FALSE)))
 
 stopifnot(file.symlink(runtime_source, file.path(worktree, "adopted-link")))
 invisible(cli(
@@ -217,7 +214,7 @@ invisible(cli(
   "--base", base,
   "--link", paste0("adopted-link=", runtime_source)
 ))
-stopifnot(!shared_targets_worktree$read_state(worktree)$runtime_links$managed)
+stopifnot(!read_state(worktree)$runtime_links$managed)
 invisible(cli("teardown", "--project", worktree))
 stopifnot(nzchar(Sys.readlink(file.path(worktree, "adopted-link"))))
 unlink(file.path(worktree, "adopted-link"))
@@ -235,7 +232,7 @@ live_source_status <- suppressWarnings(system2(
   env = paste0("TARGETS_WORKTREE_RSCRIPT=", rscript)
 ))
 stopifnot(!is.null(attr(live_source_status, "status")))
-stopifnot(is.null(shared_targets_worktree$read_state(worktree, required = FALSE)))
+stopifnot(is.null(read_state(worktree, required = FALSE)))
 
 sentinel <- file.path(worktree, "pipeline", "outputs", "sentinel")
 dir.create(dirname(sentinel), recursive = TRUE)
@@ -282,7 +279,7 @@ invisible(cli(
 store <- file.path(worktree, "pipeline", "outputs")
 stopifnot(nzchar(Sys.readlink(store)))
 stopifnot(identical(normalizePath(store), normalizePath(snapshot)))
-stopifnot(identical(withr::with_dir(worktree, targets::tar_read(result)), 200001L))
+stopifnot(identical(withr::with_dir(worktree, targets::tar_read(result)), 2001L))
 
 lock <- system2(
   "git",
@@ -322,7 +319,7 @@ failed_conversion <- suppressWarnings(system2(
   env = paste0("TARGETS_WORKTREE_RSCRIPT=", rscript)
 ))
 stopifnot(!is.null(attr(failed_conversion, "status")))
-state <- shared_targets_worktree$read_state(worktree)
+state <- read_state(worktree)
 stopifnot(identical(state$mode, "read-only"))
 stopifnot(identical(state$phase, "ready"))
 stopifnot(nzchar(Sys.readlink(store)))
@@ -340,7 +337,7 @@ invisible(cli(
   "--project", worktree,
   "--target", "large"
 ))
-state <- shared_targets_worktree$read_state(worktree)
+state <- read_state(worktree)
 stopifnot(all(state$links$kind == "object"))
 stopifnot(setequal(state$links$name, c("seed", "large")))
 invisible(cli("teardown", "--project", worktree))
@@ -356,7 +353,7 @@ invisible(cli(
   "--target", "result",
   "--target", "branch_sum"
 ))
-state <- shared_targets_worktree$read_state(worktree)
+state <- read_state(worktree)
 stopifnot(identical(state$mode, "writable-selective"))
 stopifnot(!"unrelated" %in% state$closure)
 stopifnot(any(!is.na(state$links$parent) & state$links$parent == "branch"))
@@ -421,10 +418,10 @@ invisible(cli(
 ))
 
 scratch_input <- file.path(store, "files", "input.txt")
-stopifnot(is.null(shared_targets_worktree$read_state(worktree)$quarantine))
+stopifnot(is.null(read_state(worktree)$quarantine))
 stopifnot(!nzchar(Sys.readlink(scratch_input)))
 stopifnot(identical(readLines(scratch_input), "worktree input"))
-stopifnot(identical(withr::with_dir(worktree, targets::tar_read(result)), 200011L))
+stopifnot(identical(withr::with_dir(worktree, targets::tar_read(result)), 2011L))
 stopifnot(identical(
   withr::with_dir(worktree, targets::tar_read(branch_sum)),
   9L
@@ -448,7 +445,7 @@ stopifnot(length(quarantine_line) == 1L)
 quarantine <- trimws(sub("^quarantine:", "", quarantine_line))
 stopifnot(dir.exists(quarantine))
 stopifnot(!file.exists(store) && !dir.exists(store))
-stopifnot(is.null(shared_targets_worktree$read_state(worktree, required = FALSE)))
+stopifnot(is.null(read_state(worktree, required = FALSE)))
 
 cat(
   "targets-worktree integration passed\n",
