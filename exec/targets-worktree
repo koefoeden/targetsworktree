@@ -6,7 +6,6 @@ die() {
   exit 1
 }
 
-script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 project=$PWD
 base=
 arguments=("$@")
@@ -61,6 +60,5 @@ fi
 exec 9>"$lock"
 flock -n 9 || die "another targets-worktree operation is active for $project"
 export TARGETS_WORKTREE_LOCK_HELD=1
-export TARGETS_WORKTREE_ROOT=$script_dir
 cd "$project"
-exec "${runner[@]}" "$script_dir/targets_worktree_cli.R" "$@"
+exec "${runner[@]}" -e 'targetsworktree::targets_worktree_cli()' "$@"

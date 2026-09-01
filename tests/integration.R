@@ -1,9 +1,8 @@
-script_argument <- commandArgs(trailingOnly = FALSE)[
-  grepl("^--file=", commandArgs(trailingOnly = FALSE))
-]
-script_path <- sub("^--file=", "", script_argument)
-runtime_root <- normalizePath(file.path(dirname(script_path), ".."), mustWork = TRUE)
-source(file.path(runtime_root, "R", "targets_worktree_core.R"))
+shared_targets_worktree <- getFromNamespace(
+  "targets_worktree_core",
+  "targetsworktree"
+)
+Sys.unsetenv(c("R_PROFILE_USER", "R_TESTS"))
 
 run <- function(command) {
   output <- system2(
@@ -118,7 +117,7 @@ snapshot_input_checksum <- unname(
 runtime_source <- file.path(test_root, "runtime-source")
 writeLines("runtime", runtime_source)
 
-launcher <- file.path(runtime_root, "targets-worktree")
+launcher <- targetsworktree::targets_worktree_executable()
 rscript <- file.path(R.home("bin"), "Rscript")
 cli <- function(...) {
   output <- system2(

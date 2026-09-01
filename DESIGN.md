@@ -2,8 +2,8 @@
 
 ## Ownership
 
-Worktree lifecycle support belongs in `shared-targets-runtime` because its
-contracts are common to internal `{targets}` pipelines:
+Worktree lifecycle support belongs in the `targetsworktree` package because its
+contracts are common to `{targets}` pipelines:
 
 - discover the configured store;
 - select an immutable source;
@@ -20,17 +20,21 @@ only the runtime environment inside an existing worktree.
 
 ## Single lifecycle
 
-The public lifecycle has one route:
+Creating a Git worktree does not opt it into this runtime. A worktree used only
+for code or documentation editing, Git operations, or store-independent
+validation remains unconfigured and outside the managed lifecycle. Only a
+worktree that needs targets-store inspection or target execution enters the
+public lifecycle, which has one route:
 
 ```text
 unconfigured -> read-only -> writable-selective -> teardown
 ```
 
 Configuration always links the configured store to an immutable snapshot.
-There is no code-only/bare setup and no direct writable setup. The read-only
-operation performs only configured-store discovery, immutable-source
-selection, runtime-link setup, and state recording, so a separate less-safe
-fast path would save little.
+There is no managed code-only/bare setup and no direct writable setup. A plain
+Git worktree already supplies the code-only case without attaching a store.
+The read-only operation performs configured-store discovery, immutable-source
+selection, runtime-link setup, and state recording.
 
 Conversion is explicit and endpoint-scoped. It retains the configured Pixi
 environment, runtime links, source identity, and lifecycle record while

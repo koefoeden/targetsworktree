@@ -1,9 +1,9 @@
-# targets-worktree
+# targetsworktree
 
-`targets-worktree` gives a Git worktree its own safe `{targets}` environment
-without copying an entire pipeline store. It is pipeline-independent and reads
-the store path from the worktree's `_targets.yaml` through
-`targets::tar_config_get("store")`.
+`targetsworktree` is an R package that gives a Git worktree its own safe
+`{targets}` environment without copying an entire pipeline store. It is
+pipeline-independent and reads the store path from the worktree's
+`_targets.yaml` through `targets::tar_config_get("store")`.
 
 See [DESIGN.md](DESIGN.md) for the safety invariants, reconciliation rules,
 failure recovery, feasibility measurements, and deliberate boundaries.
@@ -12,8 +12,26 @@ The command manages the targets environment inside an existing Git worktree.
 Git remains responsible for creating, merging, and removing the worktree
 itself.
 
+Do not run `configure` merely because a Git worktree was created. A worktree
+used only for code or documentation editing, Git operations, or
+store-independent validation should remain a plain, unconfigured Git worktree.
+Use this command only when the worktree needs targets-store inspection or
+target execution; every configuration attaches a targets store.
+
+## Installation
+
+Install a tagged version from the private GitHub repository:
+
+```r
+remotes::install_github("koefoeden/targetsworktree@v0.1.0")
+```
+
+The R environment used by the base checkout must contain `targetsworktree` and
+its imports.
+
 ## Lifecycle
 
+Only worktrees that need targets-store support enter the managed lifecycle.
 Every managed worktree follows one route:
 
 ```text
@@ -21,9 +39,9 @@ unconfigured -> read-only -> writable-selective -> teardown
 ```
 
 `configure` always creates a read-only worktree whose configured store is a
-symlink to an immutable snapshot. This setup is cheap enough for code editing
-and immediately supports inspection and `tar_read()`. There is no separate
-code-only or bare mode.
+symlink to an immutable snapshot and immediately supports inspection and
+`tar_read()`. There is no separate managed code-only or bare mode; ordinary
+code-only worktrees stay outside this tool.
 
 When target execution is needed, `convert` replaces that store link with
 writable metadata plus individually recorded snapshot links for the requested
@@ -36,12 +54,14 @@ base checkout itself.
 
 ## Launcher
 
-Use the executable launcher rather than calling the R script directly:
+Resolve and use the installed executable rather than calling the R API
+directly:
 
 ```bash
-SHARED_RUNTIME=/projects/cbmr_shared/people/tqb695/non-GDPR/shared-targets-runtime
+targets_worktree_tool=$(Rscript --vanilla -e \
+  'cat(targetsworktree::targets_worktree_executable())')
 
-"$SHARED_RUNTIME/worktree/targets-worktree" configure \
+"$targets_worktree_tool" configure \
   --project /path/to/pipeline-worktree \
   --base /path/to/pipeline
 ```
@@ -63,7 +83,7 @@ teardown. Raw `tar_make()` bypasses this protection and is unsupported in
 ## Configure a worktree
 
 ```bash
-"$SHARED_RUNTIME/worktree/targets-worktree" configure \
+"$targets_worktree_tool" configure \
   --project /path/to/pipeline-worktree \
   --base /path/to/pipeline
 ```
@@ -88,12 +108,6 @@ Discovery retries a transient empty listing three times. If no complete
 snapshot matches the pattern, configuration fails rather than falling back to
 another snapshot family.
 
-The CBMR Isilon daily-policy pattern is:
-
-```bash
---snapshot-pattern '^60-Research-daily-20D-[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}:[0-9]{2}$'
-```
-
 Use an explicit source when needed:
 
 ```bash
@@ -114,7 +128,7 @@ inspection while refusing pipeline writes.
 Supply one or more endpoint target names:
 
 ```bash
-"$SHARED_RUNTIME/worktree/targets-worktree" convert \
+"$targets_worktree_tool" convert \
   --project /path/to/pipeline-worktree \
   --target endpoint_a \
   --target endpoint_b
@@ -143,7 +157,7 @@ partial result.
 ## Guarded runs and reconciliation
 
 ```bash
-"$SHARED_RUNTIME/worktree/targets-worktree" run \
+"$targets_worktree_tool" run \
   --project /path/to/pipeline-worktree \
   --target endpoint_a
 ```
@@ -163,7 +177,7 @@ If no managed links remain, reconciliation skips the redundant
 Use `--local` for a deliberately small head-node run:
 
 ```bash
-"$SHARED_RUNTIME/worktree/targets-worktree" run \
+"$targets_worktree_tool" run \
   --project /path/to/pipeline-worktree \
   --target small_target \
   --local
@@ -195,7 +209,7 @@ arguments.
 ## Status
 
 ```bash
-"$SHARED_RUNTIME/worktree/targets-worktree" status \
+"$targets_worktree_tool" status \
   --project /path/to/pipeline-worktree
 ```
 
@@ -212,7 +226,7 @@ and ownership of `.pixi` and runtime links.
 ## Teardown
 
 ```bash
-"$SHARED_RUNTIME/worktree/targets-worktree" teardown \
+"$targets_worktree_tool" teardown \
   --project /path/to/pipeline-worktree
 ```
 
@@ -238,13 +252,11 @@ longer needed.
 
 ## Tests
 
-Run the generic integration test through any downstream Pixi environment that
-provides `{targets}`:
+Build and check the package through an R environment that provides its imports:
 
 ```bash
-pixi run --frozen \
-  --manifest-path /path/to/pipeline/pixi.toml \
-  Rscript worktree/tests/integration.R
+R CMD build .
+R CMD check --no-manual targetsworktree_*.tar.gz
 ```
 
 The test creates a disposable nested-store targets project and verifies:

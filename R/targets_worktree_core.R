@@ -1,4 +1,4 @@
-shared_targets_worktree <- local({
+targets_worktree_core <- local({
   # Git, path, ownership, and state primitives ---------------------------------
 
   normalize_directory <- function(path, label) {

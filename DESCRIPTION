@@ -1,0 +1,27 @@
+Package: targetsworktree
+Title: Safe Targets Stores for Git Worktrees
+Version: 0.1.0
+Authors@R: person(
+    given = "Thomas",
+    family = "Gade Koefoed",
+    role = c("aut", "cre"),
+    email = "thomas.koefoed@sund.ku.dk"
+  )
+Description: Configures snapshot-backed targets stores in existing Git
+    worktrees, converts them to endpoint-scoped writable stores, reconciles
+    cached values before guarded runs, and quarantines writable output during
+    teardown.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Depends:
+    R (>= 4.5.0)
+Imports:
+    crew,
+    targets,
+    tidyselect,
+    withr
+Suggests:
+    processx
+URL: https://github.com/koefoeden/targetsworktree
+BugReports: https://github.com/koefoeden/targetsworktree/issues
+SystemRequirements: git, flock

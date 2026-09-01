@@ -1,14 +1,4 @@
-#!/usr/bin/env Rscript
-
-arguments <- commandArgs(trailingOnly = TRUE)
-root <- Sys.getenv("TARGETS_WORKTREE_ROOT")
-if (!nzchar(root)) {
-  script <- sub("^--file=", "", commandArgs()[grepl("^--file=", commandArgs())])
-  root <- dirname(normalizePath(script, mustWork = TRUE))
-}
-source(file.path(root, "R", "targets_worktree_core.R"))
-
-usage <- function(status = 0L) {
+targets_worktree_usage <- function() {
   cat(
     "Usage:\n",
     "  targets-worktree configure --project PATH --base PATH [options]\n",
@@ -27,10 +17,10 @@ usage <- function(status = 0L) {
     "  --target NAME       Endpoint target; repeat as needed\n",
     sep = ""
   )
-  quit(status = status)
+  invisible(NULL)
 }
 
-parse_options <- function(values) {
+parse_targets_worktree_options <- function(values) {
   output <- list(
     project = getwd(),
     base = NULL,
@@ -75,7 +65,7 @@ parse_options <- function(values) {
   output
 }
 
-parse_links <- function(values) {
+parse_targets_worktree_links <- function(values) {
   if (length(values) == 0L) {
     return(character())
   }
@@ -95,7 +85,7 @@ parse_links <- function(values) {
   sources
 }
 
-print_status <- function(value) {
+print_targets_worktree_status <- function(value) {
   scalar <- c(
     "project", "base", "mode", "phase", "store", "source",
     "snapshot_pattern"
@@ -117,60 +107,69 @@ print_status <- function(value) {
   invisible(value)
 }
 
-if (length(arguments) == 0L || arguments[[1L]] %in% c("-h", "--help", "help")) {
-  usage()
-}
-if (!identical(Sys.getenv("TARGETS_WORKTREE_LOCK_HELD"), "1")) {
-  stop("Invoke this script through the targets-worktree launcher.")
-}
-
-command <- arguments[[1L]]
-options <- parse_options(arguments[-1L])
-
-if (command == "configure") {
-  if (is.null(options$base)) {
-    stop("configure requires --base.")
+#' Run the targets-worktree command-line interface
+#'
+#' This entry point is called by the installed `targets-worktree` launcher.
+#'
+#' @param arguments Command-line arguments.
+#' @return `NULL`, invisibly.
+#' @export
+targets_worktree_cli <- function(arguments = commandArgs(trailingOnly = TRUE)) {
+  if (length(arguments) == 0L || arguments[[1L]] %in% c("-h", "--help", "help")) {
+    targets_worktree_usage()
+    return(invisible(NULL))
   }
-  result <- shared_targets_worktree$configure(
-    project = options$project,
-    base = options$base,
-    source = options$source,
-    snapshot_pattern = options$snapshot_pattern,
-    runtime_links = parse_links(options$link)
-  )
-  print_status(result)
-} else if (command == "convert") {
-  if (length(options$target) == 0L) {
-    stop("convert requires at least one --target.")
-  }
-  print_status(
-    shared_targets_worktree$convert(options$project, options$target)
-  )
-} else if (command == "status") {
-  print_status(shared_targets_worktree$status(options$project))
-} else if (command == "reconcile") {
-  result <- shared_targets_worktree$reconcile(
-    options$project,
-    if (length(options$target) == 0L) NULL else options$target
-  )
-  cat("outdated targets:", paste(result$outdated, collapse = ", "), "\n")
-  print_status(shared_targets_worktree$status(options$project))
-} else if (command == "run") {
-  shared_targets_worktree$run(
-    options$project,
-    if (length(options$target) == 0L) NULL else options$target,
-    local = options$local
-  )
-  print_status(shared_targets_worktree$status(options$project))
-} else if (command == "teardown") {
-  result <- shared_targets_worktree$teardown(options$project)
-  cat("mode:", result$mode, "\n")
-  if (!is.null(result$quarantine)) {
-    for (path in result$quarantine) {
-      cat("quarantine:", path, "\n")
+  require_targets_worktree_lock()
+
+  command <- arguments[[1L]]
+  options <- parse_targets_worktree_options(arguments[-1L])
+
+  if (command == "configure") {
+    if (is.null(options$base)) {
+      stop("configure requires --base.")
     }
+    result <- targets_worktree_configure(
+      project = options$project,
+      base = options$base,
+      source = options$source,
+      snapshot_pattern = options$snapshot_pattern,
+      runtime_links = parse_targets_worktree_links(options$link)
+    )
+    print_targets_worktree_status(result)
+  } else if (command == "convert") {
+    if (length(options$target) == 0L) {
+      stop("convert requires at least one --target.")
+    }
+    print_targets_worktree_status(
+      targets_worktree_convert(options$project, options$target)
+    )
+  } else if (command == "status") {
+    print_targets_worktree_status(targets_worktree_status(options$project))
+  } else if (command == "reconcile") {
+    result <- targets_worktree_reconcile(
+      options$project,
+      if (length(options$target) == 0L) NULL else options$target
+    )
+    cat("outdated targets:", paste(result$outdated, collapse = ", "), "\n")
+    print_targets_worktree_status(targets_worktree_status(options$project))
+  } else if (command == "run") {
+    targets_worktree_run(
+      options$project,
+      if (length(options$target) == 0L) NULL else options$target,
+      local = options$local
+    )
+    print_targets_worktree_status(targets_worktree_status(options$project))
+  } else if (command == "teardown") {
+    result <- targets_worktree_teardown(options$project)
+    cat("mode:", result$mode, "\n")
+    if (!is.null(result$quarantine)) {
+      for (path in result$quarantine) {
+        cat("quarantine:", path, "\n")
+      }
+    }
+    cat("receipt:", result$receipt, "\n")
+  } else {
+    stop("Unknown command: ", command)
   }
-  cat("receipt:", result$receipt, "\n")
-} else {
-  stop("Unknown command: ", command)
+  invisible(NULL)
 }
