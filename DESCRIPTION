@@ -1,6 +1,6 @@
 Package: targetsworktree
 Title: Safe Targets Stores for Git Worktrees
-Version: 0.1.2
+Version: 0.2.0
 Authors@R: person(
     given = "Thomas",
     family = "Gade Koefoed",
@@ -8,9 +8,9 @@ Authors@R: person(
     email = "thomas.koefoed@sund.ku.dk"
   )
 Description: Configures snapshot-backed targets stores in existing Git
-    worktrees, converts them to endpoint-scoped writable stores, reconciles
-    cached values before guarded runs, and quarantines writable output during
-    teardown.
+    worktrees, links the snapshot values each guarded run needs into a
+    writable store, reconciles them with the current code, and quarantines
+    writable output during teardown.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Depends:

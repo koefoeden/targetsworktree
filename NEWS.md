@@ -1,3 +1,10 @@
+# targetsworktree 0.2.0
+
+- Remove the `convert` command and the fixed endpoint set. The first `run`
+  converts the worktree, and every run links the snapshot values its closure
+  still shares with the snapshot, so any target can be run without
+  reconfiguring. `run` now requires at least one `--target`.
+
 # targetsworktree 0.1.2
 
 - Identify managed symlinks by their link text, so teardown still removes a

@@ -227,12 +227,13 @@ invisible(cli(
 remove_snapshot(expiring_snapshot)
 expired_status <- cli("status", "--project", worktree)
 stopifnot(any(grepl("^source status: +missing", expired_status)))
-expired_conversion <- cli_failure(
-  "convert",
+expired_run <- cli_failure(
+  "run",
   "--project", worktree,
-  "--target", "large"
+  "--target", "large",
+  "--local"
 )
-stopifnot(any(grepl("no longer exists", expired_conversion, fixed = TRUE)))
+stopifnot(any(grepl("no longer exists", expired_run, fixed = TRUE)))
 stopifnot(identical(read_state(worktree)$mode, "read-only"))
 invisible(cli("teardown", "--project", worktree))
 stopifnot(!is_link(file.path(worktree, "pipeline", "outputs")))
@@ -328,47 +329,35 @@ invisible(cli_failure("status", "--project", worktree))
 invisible(holder$kill_tree())
 invisible(holder$wait(timeout = 1000))
 
+invisible(cli_failure("run", "--project", worktree, "--local"))
 invisible(cli_failure(
-  "convert",
+  "run",
   "--project", worktree,
-  "--target", "target_that_does_not_exist"
+  "--target", "target_that_does_not_exist",
+  "--local"
 ))
 state <- read_state(worktree)
 stopifnot(identical(state$mode, "read-only"))
 stopifnot(identical(state$phase, "ready"))
 stopifnot(is_link(store))
 
-invisible(cli("teardown", "--project", worktree))
-stopifnot(!file.exists(store) && !is_link(store))
-
-invisible(cli(
-  "configure",
-  "--project", worktree,
-  "--base", base
-))
-invisible(cli(
-  "convert",
-  "--project", worktree,
-  "--target", "large"
-))
-state <- read_state(worktree)
-stopifnot(all(state$links$kind == "object"))
-stopifnot(setequal(state$links$name, c("seed", "large")))
-invisible(cli("teardown", "--project", worktree))
-
-invisible(cli(
-  "configure",
-  "--project", worktree,
-  "--base", base
-))
-invisible(cli(
-  "convert",
-  "--project", worktree,
-  "--target", "result",
-  "--target", "branch_sum"
-))
+# The first run converts the store and links only its own closure.
+invisible(cli("run", "--project", worktree, "--target", "large", "--local"))
 state <- read_state(worktree)
 stopifnot(identical(state$mode, "writable-selective"))
+stopifnot(all(state$links$kind == "object"))
+stopifnot(setequal(state$links$name, c("seed", "large")))
+stopifnot(!file.exists(file.path(store, "files", "input.txt")))
+
+# A later run links the rest of its closure on demand.
+invisible(cli(
+  "run",
+  "--project", worktree,
+  "--target", "result",
+  "--target", "branch_sum",
+  "--local"
+))
+state <- read_state(worktree)
 stopifnot(!"unrelated" %in% state$closure)
 stopifnot(any(!is.na(state$links$parent) & state$links$parent == "branch"))
 stopifnot(is_link(file.path(store, "objects", "large")))
@@ -433,6 +422,13 @@ stopifnot(identical(
   withr::with_dir(worktree, targets::tar_read(branch_sum)),
   9L
 ))
+
+# After rebuilds, a new target is still linked on demand, and rebuilt values
+# stay physical.
+invisible(cli("run", "--project", worktree, "--target", "unrelated", "--local"))
+stopifnot(is_link(file.path(store, "objects", "unrelated")))
+stopifnot(!is_link(file.path(store, "objects", "result")))
+stopifnot(!is_link(scratch_input))
 stopifnot(
   identical(
     unname(tools::md5sum(file.path(snapshot, "meta", "meta"))),
@@ -457,12 +453,13 @@ stopifnot(is.null(read_state(worktree, required = FALSE)))
 cat(
   "targets-worktree integration passed\n",
   "  configured nested store: yes\n",
-  "  read-only default and selective conversion: yes\n",
+  "  read-only default and conversion on the first run: yes\n",
+  "  on-demand linking across runs and after rebuilds: yes\n",
   "  per-command option validation: yes\n",
   "  teardown validates first and resumes: yes\n",
   "  mixed snapshot families refused without a pattern: yes\n",
   "  expired snapshot reported and torn down: yes\n",
-  "  failed conversion planning preserves read-only state: yes\n",
+  "  failed run planning preserves read-only state: yes\n",
   "  managed/adopted runtime links: yes\n",
   "  Pixi lock guard and worktree environment: yes\n",
   "  live source and conflicting path refused: yes\n",

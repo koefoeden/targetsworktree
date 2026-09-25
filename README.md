@@ -43,10 +43,10 @@ symlink to an immutable snapshot and immediately supports inspection and
 `tar_read()`. There is no separate managed code-only or bare mode; ordinary
 code-only worktrees stay outside this tool.
 
-When target execution is needed, `convert` replaces that store link with
-writable metadata plus individually recorded snapshot links for the requested
-up-to-date dependency closure. Conversion preserves the worktree's Pixi and
-runtime-link setup.
+The first `run` converts the worktree: it replaces the store link with a
+writable store holding a copy of the snapshot metadata. Each run then links the
+snapshot values its targets need, so any target can be run at any time without
+reconfiguring. Conversion preserves the worktree's Pixi and runtime-link setup.
 
 The base checkout and worktree must belong to the same Git repository and must
 configure the same relative targets store. The command refuses to configure the
@@ -139,56 +139,35 @@ Run Pixi there only with `--as-is` or `--frozen --no-install`, or through the
 launcher, so a later lock-file change cannot update the base environment. The
 immutable store supports target inspection while refusing pipeline writes.
 
-## Convert to a selective writable store
+## Run targets
 
-Supply one or more endpoint target names:
+Name the targets to make; repeat `--target` as needed:
 
 ```bash
-"$targets_worktree_tool" convert \
+"$targets_worktree_tool" run \
   --project /path/to/pipeline-worktree \
   --target endpoint_a \
   --target endpoint_b
 ```
 
-Conversion uses the already configured immutable snapshot to:
+Each run:
 
-1. compute the endpoints' dependency closure;
-2. call `tar_outdated()` against the snapshot and current worktree code;
-3. copy only `meta/meta`;
-4. link reusable target objects and store-relative file outputs;
-5. leave outdated outputs absent so `{targets}` writes them physically;
-6. reference external absolute and repository-relative inputs without copying
-   them.
+1. refuses another live targets process in the worktree;
+2. computes the targets' dependency closure, which only reads, so an unknown
+   target or a broken pipeline leaves the worktree unchanged;
+3. on the first run, converts the store by copying only `meta/meta`;
+4. links each closure value whose worktree metadata row is still the row copied
+   from the snapshot, covering target objects and store-relative file outputs;
+5. lets `tar_outdated()` compare those values with the current worktree code,
+   and removes only recorded links whose owner targets are outdated;
+6. runs `tar_make()` while retaining the lifecycle lock.
 
-The final store is a physical writable directory. Snapshot-backed values inside
-it are individually recorded symlinks.
-
-The configured endpoints bound the selective store. A later run may select all
-or a subset of them, but expanding the endpoint set requires teardown and
-fresh read-only configuration followed by conversion. A failed planning step
-leaves the read-only setup unchanged. If materialization fails after mutation
-begins, the tool restores the read-only store link and quarantines any physical
-partial result.
-
-## Guarded runs and reconciliation
-
-```bash
-"$targets_worktree_tool" run \
-  --project /path/to/pipeline-worktree \
-  --target endpoint_a
-```
-
-Immediately before execution, the tool:
-
-- refuses another live targets process in this worktree;
-- recomputes outdatedness when managed snapshot links exist;
-- removes only recorded links whose owner targets are now outdated;
-- refuses links that were redirected to an unexpected source;
-- preserves physical worktree outputs;
-- runs `tar_make()` while retaining the lifecycle lock.
-
-If no managed links remain, reconciliation skips the redundant
-`tar_outdated()` scan.
+Values the worktree has rebuilt are never replaced by links, and outdated
+values stay absent so `{targets}` writes them physically. External absolute and
+repository-relative inputs are referenced in place. Links that were redirected
+to an unexpected source are refused. A later run with other targets links their
+closure on demand. If conversion fails after it begins, the tool restores the
+read-only store link and quarantines any physical partial result.
 
 Use `--local` for a deliberately small head-node run:
 
@@ -236,7 +215,7 @@ git -C /path/to/pipeline-worktree \
   rev-parse --path-format=absolute --git-path targets-worktree/state.rds
 ```
 
-It records the mode, configured store, source, endpoint closure, managed links,
+It records the mode, configured store, source, targets run so far, their closure, managed links,
 and ownership of `.pixi` and runtime links. Status reports a recorded source
 that no longer exists, such as an expired snapshot; conversion and runs that
 still depend on it refuse to continue until the worktree is reconfigured.
@@ -285,7 +264,8 @@ The test creates a disposable nested-store targets project and verifies:
 
 - side-effect-free status checks before configuration;
 - per-command option validation;
-- the read-only default and explicit selective conversion;
+- the read-only default and conversion on the first run;
+- on-demand linking across runs and after rebuilds;
 - expired-source reporting and teardown;
 - refusal of mixed snapshot families without a pattern;
 - validate-first, resumable teardown;

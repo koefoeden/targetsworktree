@@ -2,9 +2,8 @@ targets_worktree_usage <- function() {
   cat(
     "Usage:\n",
     "  targets-worktree configure --project PATH --base PATH [options]\n",
-    "  targets-worktree convert --project PATH --target NAME [--target NAME ...]\n",
     "  targets-worktree status --project PATH\n",
-    "  targets-worktree run --project PATH [--target NAME ...] [--local]\n",
+    "  targets-worktree run --project PATH --target NAME [--target NAME ...] [--local]\n",
     "  targets-worktree teardown --project PATH\n",
     "\n",
     "Configure options:\n",
@@ -12,8 +11,9 @@ targets_worktree_usage <- function() {
     "  --snapshot-pattern REGEX   Restrict automatic snapshot discovery by name\n",
     "  --link REL=SOURCE          Extra runtime symlink; repeat as needed\n",
     "\n",
-    "Convert/run options:\n",
-    "  --target NAME       Endpoint target; repeat as needed\n",
+    "Run options:\n",
+    "  --target NAME   Target to make; repeat as needed\n",
+    "  --local         Use a one-worker local Crew controller\n",
     sep = ""
   )
   invisible(NULL)
@@ -21,7 +21,6 @@ targets_worktree_usage <- function() {
 
 command_options <- list(
   configure = c("project", "base", "source", "snapshot-pattern", "link"),
-  convert = c("project", "target"),
   status = "project",
   run = c("project", "target", "local"),
   teardown = "project"
@@ -129,22 +128,15 @@ targets_worktree_cli <- function(arguments = commandArgs(trailingOnly = TRUE)) {
       runtime_links = parse_targets_worktree_links(options$link)
     )
     print_targets_worktree_status(result)
-  } else if (command == "convert") {
-    if (length(options$target) == 0L) {
-      stop("convert requires at least one --target.")
-    }
-    print_targets_worktree_status(
-      convert(options$project, options$target)
-    )
   } else if (command == "status") {
     print_targets_worktree_status(status(options$project))
   } else if (command == "run") {
-    run(
-      options$project,
-      if (length(options$target) == 0L) NULL else options$target,
-      local = options$local
+    if (length(options$target) == 0L) {
+      stop("run requires at least one --target.")
+    }
+    print_targets_worktree_status(
+      run(options$project, options$target, local = options$local)
     )
-    print_targets_worktree_status(status(options$project))
   } else if (command == "teardown") {
     result <- teardown(options$project)
     cat("mode:", result$mode, "\n")

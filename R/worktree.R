@@ -412,159 +412,50 @@ expand_file_rows <- function(metadata) {
   do.call(rbind, rows)
 }
 
-plan_snapshot <- function(project, target_names, source) {
-  store_relative <- configured_store(project)
-  store <- safe_destination(project, store_relative, "Configured targets store")
-  if (!link_matches(store, source)) {
-    stop("Snapshot planning requires the configured store to link to the source.")
-  }
-
-  graph <- target_graph(project, target_names)
-  closure_names <- unique(graph$vertices$name)
-  outdated_names <- target_outdated(project, target_names)
-  ready_names <- setdiff(closure_names, outdated_names)
-  metadata <- targets::tar_meta(
-    store = store,
-    fields = tidyselect::everything()
+# A snapshot value is reusable wherever the worktree metadata row is still the
+# row copied from the snapshot. Linking such values before targets checks the
+# closure lets targets decide outdatedness against the current worktree code.
+snapshot_links <- function(state, store, target_names) {
+  closure <- unique(target_graph(state$project, target_names)$vertices$name)
+  meta_fields <- c("name", "type", "format", "path", "parent", "data", "error")
+  source_meta <- targets::tar_meta(
+    store = state$source,
+    fields = tidyselect::all_of(meta_fields)
   )
-  ready <- metadata[
-    metadata$name %in% ready_names |
-      (!is.na(metadata$parent) & metadata$parent %in% ready_names),
-    ,
-    drop = FALSE
-  ]
-  ready <- ready[
-    ready$type != "pattern" & is.na(ready$error),
+  worktree_meta <- targets::tar_meta(
+    store = store,
+    fields = tidyselect::all_of(meta_fields)
+  )
+  rows <- source_meta[
+    (source_meta$name %in% closure | source_meta$parent %in% closure) &
+      source_meta$type != "pattern" &
+      is.na(source_meta$error) &
+      paste(source_meta$name, source_meta$data) %in%
+        paste(worktree_meta$name, worktree_meta$data),
     ,
     drop = FALSE
   ]
 
-  objects <- ready[
-    ready$format != "file",
-    c("name", "parent"),
-    drop = FALSE
-  ]
+  objects <- rows[rows$format != "file", c("name", "parent"), drop = FALSE]
   objects$relative <- file.path("objects", objects$name)
-  objects$source <- file.path(source, objects$relative)
   objects$kind <- rep("object", nrow(objects))
 
-  files <- expand_file_rows(ready)
-  if (nrow(files) > 0L) {
-    store_prefix <- paste0(store_relative, "/")
-    files$class <- ifelse(
-      startsWith(files$path, "/"),
-      "external",
-      ifelse(startsWith(files$path, store_prefix), "store", "project")
-    )
-    files$relative <- ifelse(
-      files$class == "store",
-      substring(files$path, nchar(store_prefix) + 1L),
-      NA_character_
-    )
-    files$source <- ifelse(
-      files$class == "store",
-      file.path(source, files$relative),
-      ifelse(
-        files$class == "external",
-        files$path,
-        file.path(project, files$path)
-      )
-    )
-    store_indices <- which(files$class == "store")
-    files$relative[store_indices] <- vapply(
-      files$relative[store_indices],
-      safe_relative_path,
-      character(1),
-      label = "Store-relative file target"
-    )
-    project_indices <- which(files$class == "project")
-    files$path[project_indices] <- vapply(
-      files$path[project_indices],
-      safe_relative_path,
-      character(1),
-      label = "Project-relative file target"
-    )
-  } else {
-    files$class <- character()
-    files$relative <- character()
-    files$source <- character()
-  }
+  # Only store-relative file targets live in the store; others stay in place.
+  files <- expand_file_rows(rows)
+  store_prefix <- paste0(state$store_relative, "/")
+  files <- files[startsWith(files$path, store_prefix), , drop = FALSE]
+  files$relative <- unname(vapply(
+    substring(files$path, nchar(store_prefix) + 1L),
+    safe_relative_path,
+    character(1),
+    label = "Store-relative file target"
+  ))
+  files$kind <- rep("file", nrow(files))
 
-  linked_files <- files[files$class == "store", , drop = FALSE]
-  linked_files$kind <- rep("file", nrow(linked_files))
-  required_files <- files[files$class != "store", , drop = FALSE]
-  missing <- c(
-    objects$source[!file.exists(objects$source)],
-    linked_files$source[
-      !file.exists(linked_files$source) & !dir.exists(linked_files$source)
-    ],
-    required_files$source[
-      !file.exists(required_files$source) & !dir.exists(required_files$source)
-    ]
-  )
-  if (length(missing) > 0L) {
-    stop(
-      "Ready target outputs or inputs are missing:\n",
-      paste(unique(missing), collapse = "\n")
-    )
-  }
-
-  links <- rbind(
-    objects[, c("name", "parent", "relative", "source", "kind")],
-    linked_files[, c("name", "parent", "relative", "source", "kind")]
-  )
+  links <- rbind(objects, files[, names(objects), drop = FALSE])
+  links$source <- file.path(state$source, links$relative)
   rownames(links) <- NULL
-  list(
-    closure = closure_names,
-    outdated = outdated_names,
-    links = links
-  )
-}
-
-materialize_plan <- function(project, store_relative, source, plan, stage) {
-  store <- safe_destination(project, store_relative, "Configured targets store")
-  if (!link_matches(store, source)) {
-    stop("Planning symlink changed before materialization.")
-  }
-  if (unlink(store) != 0L) {
-    stop("Could not remove planning symlink.")
-  }
-
-  if (occupied(stage)) {
-    stop("Staging path already exists: ", stage)
-  }
-  dir.create(file.path(stage, "meta"), recursive = TRUE)
-  dir.create(file.path(stage, "objects"), recursive = TRUE)
-  incomplete <- TRUE
-  on.exit({
-    if (incomplete && dir.exists(stage)) {
-      unlink(stage, recursive = TRUE)
-    }
-  }, add = TRUE)
-
-  metadata_source <- file.path(source, "meta", "meta")
-  metadata_destination <- file.path(stage, "meta", "meta")
-  if (!file.copy(metadata_source, metadata_destination, overwrite = FALSE)) {
-    stop("Could not copy targets metadata into scratch.")
-  }
-  Sys.chmod(metadata_destination, "0644", use_umask = FALSE)
-  if (file.access(metadata_destination, 2L) != 0L) {
-    stop("Scratch metadata is not writable.")
-  }
-
-  for (index in seq_len(nrow(plan$links))) {
-    destination <- safe_destination(
-      stage,
-      plan$links$relative[[index]],
-      "Selective-store link"
-    )
-    ensure_link(destination, plan$links$source[[index]])
-  }
-  if (!file.rename(stage, store)) {
-    stop("Could not atomically install selective targets store.")
-  }
-  incomplete <- FALSE
-  invisible(store)
+  list(closure = closure, links = links)
 }
 
 # Lifecycle, reconciliation, execution, and teardown -------------------------
@@ -750,17 +641,7 @@ rollback_conversion <- function(project) {
   invisible(state)
 }
 
-convert <- function(project, target_names) {
-  state <- read_state(project)
-  if (!identical(state$phase, "ready") ||
-    !identical(state$mode, "read-only")) {
-    stop("Conversion requires a ready read-only worktree.")
-  }
-  target_names <- unique(target_names[nzchar(target_names)])
-  if (length(target_names) == 0L) {
-    stop("Conversion requires at least one endpoint target.")
-  }
-
+convert_store <- function(state) {
   store <- safe_destination(
     state$project,
     state$store_relative,
@@ -769,11 +650,6 @@ convert <- function(project, target_names) {
   if (!link_matches(store, state$source)) {
     stop("Read-only store no longer links to its recorded source.")
   }
-  require_source(state)
-
-  # Planning is read-only. A planning failure therefore leaves the original
-  # worktree state and store link untouched.
-  plan <- plan_snapshot(state$project, target_names, state$source)
   stage <- file.path(
     dirname(store),
     paste0(".", basename(store), ".targets-worktree-stage-", state$id)
@@ -784,7 +660,6 @@ convert <- function(project, target_names) {
 
   state$mode <- "writable-selective"
   state$phase <- "converting"
-  state$targets <- target_names
   state$stage <- stage
   write_state(state)
 
@@ -808,22 +683,46 @@ convert <- function(project, target_names) {
     }
   }, add = TRUE)
 
-  materialize_plan(
-    state$project,
-    state$store_relative,
-    state$source,
-    plan,
-    stage
-  )
+  dir.create(file.path(stage, "meta"), recursive = TRUE)
+  dir.create(file.path(stage, "objects"))
+  metadata <- file.path(stage, "meta", "meta")
+  if (!file.copy(file.path(state$source, "meta", "meta"), metadata)) {
+    stop("Could not copy targets metadata into scratch.")
+  }
+  Sys.chmod(metadata, "0644", use_umask = FALSE)
+  if (unlink(store) != 0L || !file.rename(stage, store)) {
+    stop("Could not atomically install the writable targets store.")
+  }
   state$stage <- NULL
-  state$closure <- plan$closure
-  state$outdated <- plan$outdated
-  state$links <- plan$links
   state$phase <- "ready"
   state$converted_at <- format(Sys.time(), tz = "UTC", usetz = TRUE)
   write_state(state)
   rollback <- FALSE
-  status(state$project)
+  state
+}
+
+# Values the worktree built itself are never replaced by links.
+link_values <- function(state, plan) {
+  store <- safe_destination(
+    state$project,
+    state$store_relative,
+    "Recorded targets store"
+  )
+  linked <- vapply(seq_len(nrow(plan$links)), function(index) {
+    destination <- safe_destination(
+      store,
+      plan$links$relative[[index]],
+      "Snapshot value link"
+    )
+    if (file.exists(destination) && is.na(link_value(destination))) {
+      return(FALSE)
+    }
+    ensure_link(destination, plan$links$source[[index]])
+    TRUE
+  }, logical(1))
+  state$links <- unique(rbind(state$links, plan$links[linked, , drop = FALSE]))
+  state$closure <- union(state$closure, plan$closure)
+  write_state(state)
 }
 
 require_source <- function(state) {
@@ -854,35 +753,18 @@ active_targets_process <- function(store) {
   identical(status, 0L)
 }
 
-reconcile <- function(project, target_names = NULL) {
-  state <- read_state(project)
-  if (!identical(state$phase, "ready") ||
-    !identical(state$mode, "writable-selective")) {
-    stop("Reconciliation requires a ready writable-selective worktree.")
-  }
+reconcile <- function(state, target_names) {
   store <- safe_destination(
     state$project,
     state$store_relative,
     "Recorded targets store"
   )
   if (!dir.exists(store) || !is.na(link_value(store))) {
-    stop("Selective store is not a physical directory.")
-  }
-  if (active_targets_process(store)) {
-    stop("A targets process is already active in this worktree.")
-  }
-
-  target_names <- if (is.null(target_names)) state$targets else unique(target_names)
-  if (!all(target_names %in% state$targets)) {
-    stop(
-      "Run targets must be a subset of configured endpoints. ",
-      "Reconfigure to expand the selective store."
-    )
+    stop("Writable store is not a physical directory.")
   }
   outdated <- if (nrow(state$links) == 0L) {
     character()
   } else {
-    require_source(state)
     target_outdated(state$project, target_names)
   }
   remove <- owner_outdated(state$links, outdated)
@@ -917,12 +799,36 @@ reconcile <- function(project, target_names = NULL) {
   state$outdated <- outdated
   state$reconciled_at <- format(Sys.time(), tz = "UTC", usetz = TRUE)
   write_state(state)
-  list(state = state, targets = target_names, outdated = outdated)
 }
 
-run <- function(project, target_names = NULL, local = FALSE) {
-  reconciliation <- reconcile(project, target_names)
-  withr::with_dir(reconciliation$state$project, {
+run <- function(project, target_names, local = FALSE) {
+  state <- read_state(project)
+  if (!identical(state$phase, "ready")) {
+    stop("Runs require a ready worktree; teardown to recover from: ", state$phase)
+  }
+  target_names <- unique(target_names[nzchar(target_names)])
+  if (length(target_names) == 0L) {
+    stop("Runs require at least one target.")
+  }
+  require_source(state)
+  store <- safe_destination(
+    state$project,
+    state$store_relative,
+    "Recorded targets store"
+  )
+  if (identical(state$mode, "writable-selective") && active_targets_process(store)) {
+    stop("A targets process is already active in this worktree.")
+  }
+
+  # Planning only reads, so an unknown target or a broken pipeline leaves the
+  # worktree unchanged. The first run converts the read-only store.
+  plan <- snapshot_links(state, store, target_names)
+  if (identical(state$mode, "read-only")) {
+    state <- convert_store(state)
+  }
+  state <- reconcile(link_values(state, plan), target_names)
+
+  withr::with_dir(state$project, {
     if (local) {
       previous_controller <- targets::tar_option_get("controller")
       on.exit(
@@ -933,21 +839,18 @@ run <- function(project, target_names = NULL, local = FALSE) {
         controller = crew::crew_controller_local(workers = 1L)
       )
       targets::tar_make(
-        names = tidyselect::all_of(reconciliation$targets),
+        names = tidyselect::all_of(target_names),
         callr_function = NULL,
         envir = globalenv()
       )
     } else {
-      targets::tar_make(
-        names = tidyselect::all_of(reconciliation$targets)
-      )
+      targets::tar_make(names = tidyselect::all_of(target_names))
     }
   })
   state <- read_state(project)
-  if (setequal(reconciliation$targets, state$targets)) {
-    state$outdated <- character()
-  }
-  state$last_run_targets <- reconciliation$targets
+  state$targets <- union(state$targets, target_names)
+  state$outdated <- character()
+  state$last_run_targets <- target_names
   state$last_run_at <- format(Sys.time(), tz = "UTC", usetz = TRUE)
   write_state(state)
   invisible(status(project))

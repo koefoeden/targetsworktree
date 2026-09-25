@@ -12,7 +12,7 @@ contracts are common to `{targets}` pipelines:
 - preserve generated worktree data.
 
 A downstream pipeline supplies only its own `_targets.yaml`, Pixi environment,
-endpoint targets, and optional runtime links. The implementation contains no
+the targets to run, and optional runtime links. The implementation contains no
 project-specific target names, paths, or analysis logic.
 
 Git remains responsible for branches and worktree registration. This tool owns
@@ -36,9 +36,10 @@ Git worktree already supplies the code-only case without attaching a store.
 The read-only operation performs configured-store discovery, immutable-source
 selection, runtime-link setup, and state recording.
 
-Conversion is explicit and endpoint-scoped. It retains the configured Pixi
+The first run converts the worktree. Conversion retains the configured Pixi
 environment, runtime links, source identity, and lifecycle record while
-replacing the whole-store snapshot link with a selective physical store.
+replacing the whole-store snapshot link with a physical store. There is no
+separate conversion command and no fixed endpoint set.
 
 ## Safety invariants
 
@@ -89,41 +90,47 @@ that owns the environment: the base when the worktree links it. `--as-is`
 never installs or updates an environment. Pixi commands run by hand in a linked
 worktree are outside this protection and should use `--as-is` as well.
 
-## Selective-store conversion
+## Conversion and on-demand linking
 
-Read-only configuration links the worktree store path to an immutable
-snapshot. Conversion plans against this view because `tar_outdated()` must be
-able to resolve store-relative file targets while comparing the current
-worktree code with snapshot metadata.
+`targets` treats a value whose stored file is missing as outdated. A physical
+store that holds only copied metadata would therefore make every unlinked value
+look outdated. Each run instead links the values its closure needs before
+asking `targets` which of them are outdated.
 
-The planner then:
+A snapshot value is valid in the worktree exactly when the worktree metadata row
+for its target is still the row copied from the snapshot, compared by name and
+data hash. The row then describes that value, whatever the worktree code has
+become since. A value the worktree rebuilt has a new row and a physical file,
+so it is never replaced. This makes linking safe to repeat for any target set
+in any run, which is why no endpoint set needs to be fixed.
 
-1. computes the dependency closure of the requested endpoints with
-   `tar_network()`;
-2. computes outdated targets against the snapshot;
-3. selects metadata rows owned by up-to-date closure targets, including dynamic
-   branches;
-4. classifies file-target paths as store-relative, project-relative, or
-   external absolute paths;
-5. validates that every reusable output and required input exists.
+Each run:
 
-Materialization copies only `meta/meta`. Target objects and store-relative file
-outputs are represented by individually recorded absolute symlinks. External
-and project-relative inputs remain where they are. Outdated outputs remain
-absent.
+1. computes the dependency closure of the requested targets with
+   `tar_network()`, which only reads, so planning failures leave the worktree
+   unchanged;
+2. on the first run, converts the store: it copies only `meta/meta` into a
+   recorded staging directory and atomically renames it into place;
+3. selects snapshot metadata rows owned by closure targets, including dynamic
+   branches, whose worktree rows are still identical to the snapshot rows;
+4. links target objects and store-relative file outputs from those rows where
+   the destination is absent, leaving physical values untouched and failing
+   closed on symlinks to other sources;
+5. reconciles, then runs `tar_make()`.
 
-The store is constructed in a recorded staging directory and atomically renamed
-into place. Planning failures occur before the state transition and leave the
-read-only worktree unchanged. After the transition begins, ordinary R errors
-restore the snapshot link and quarantine physical partial results. If the
-process dies abruptly, the persistent `converting` state identifies the exact
-staging path so teardown can quarantine it.
+External and project-relative inputs remain where they are. Outdated outputs
+remain absent, so `{targets}` writes them physically.
+
+After conversion begins, ordinary R errors restore the snapshot link and
+quarantine physical partial results. If the process dies abruptly, the
+persistent `converting` state identifies the exact staging path so teardown can
+quarantine it.
 
 ## Reconciliation
 
-Code may change after setup. Before a guarded run, reconciliation computes
-outdatedness for the selected configured endpoints and unlinks snapshot values
-owned by newly outdated targets.
+After linking, reconciliation computes outdatedness for the requested targets
+against the current worktree code and unlinks snapshot values owned by
+outdated targets.
 
 For dynamic metadata, a link is outdated when either its own metadata name or
 its recorded parent target is outdated.
@@ -139,12 +146,8 @@ The reconciler handles each recorded destination as follows:
 | Symlink to another source | Fail closed |
 
 If no managed links remain, there is nothing that can write through to the
-snapshot, so the separate pre-run `tar_outdated()` scan is skipped.
-
-The endpoint set is intentionally fixed at conversion time. Supporting
-arbitrary expansion would require comparing the current mixed scratch store,
-the snapshot, and potentially newer physical results. Reconfiguration is
-simpler and unambiguous.
+snapshot, so the separate pre-run `tar_outdated()` scan is skipped. Runs need
+the recorded source to exist, because they may link more of it.
 
 ## Locking and target processes
 
