@@ -98,20 +98,10 @@ create_snapshot <- function(path) {
   stopifnot(system2("chmod", c("-R", "a-w", path)) == 0L)
 }
 create_snapshot(snapshot)
-daily_snapshot_old <- file.path(
-  base_store,
-  ".snapshot",
-  "daily-2026-07-29"
-)
-daily_snapshot_new <- file.path(
-  base_store,
-  ".snapshot",
-  "daily-2026-07-30"
-)
-replication_snapshot <- file.path(base_store, ".snapshot", "SIQ-replication-new")
-create_snapshot(daily_snapshot_old)
-create_snapshot(daily_snapshot_new)
-create_snapshot(replication_snapshot)
+remove_snapshot <- function(path) {
+  stopifnot(system2("chmod", c("-R", "u+w", path)) == 0L)
+  unlink(path, recursive = TRUE)
+}
 snapshot_meta_checksum <- unname(tools::md5sum(file.path(snapshot, "meta", "meta")))
 snapshot_input_checksum <- unname(
   tools::md5sum(file.path(snapshot, "files", "input.txt"))
@@ -162,10 +152,32 @@ stopifnot(identical(
 ))
 bad_option <- cli_failure("status", "--project", worktree, "--target", "large")
 stopifnot(any(grepl("Unexpected argument for status", bad_option, fixed = TRUE)))
+
+# Teardown validates every recorded path before changing anything, and skips
+# recorded links that are already gone.
+other_source <- file.path(test_root, "other-source")
+writeLines("other", other_source)
+unlink(file.path(worktree, "runtime-link"))
+stopifnot(file.symlink(other_source, file.path(worktree, "runtime-link")))
+redirected <- cli_failure("teardown", "--project", worktree)
+stopifnot(any(grepl("no longer points to its recorded source", redirected, fixed = TRUE)))
+stopifnot(identical(read_state(worktree)$phase, "ready"))
+stopifnot(is_link(file.path(worktree, "pipeline", "outputs")))
+unlink(file.path(worktree, "runtime-link"))
 invisible(cli("teardown", "--project", worktree))
 stopifnot(is.null(read_state(worktree, required = FALSE)))
-stopifnot(!file.exists(file.path(worktree, "runtime-link")))
+stopifnot(!is_link(file.path(worktree, "pipeline", "outputs")))
 stopifnot(identical(readLines(runtime_source), "runtime"))
+
+daily_snapshot_old <- file.path(base_store, ".snapshot", "daily-2026-07-29")
+daily_snapshot_new <- file.path(base_store, ".snapshot", "daily-2026-07-30")
+replication_snapshot <- file.path(base_store, ".snapshot", "SIQ-replication-new")
+create_snapshot(daily_snapshot_old)
+create_snapshot(daily_snapshot_new)
+create_snapshot(replication_snapshot)
+mixed_families <- cli_failure("configure", "--project", worktree, "--base", base)
+stopifnot(any(grepl("several naming families", mixed_families, fixed = TRUE)))
+stopifnot(is.null(read_state(worktree, required = FALSE)))
 
 snapshot_pattern <- "^daily-[0-9]{4}-[0-9]{2}-[0-9]{2}$"
 pattern_status <- cli(
@@ -199,6 +211,9 @@ source_and_pattern_status <- cli_failure(
 )
 stopifnot(any(grepl("either an explicit source", source_and_pattern_status)))
 stopifnot(is.null(read_state(worktree, required = FALSE)))
+for (path in c(daily_snapshot_old, daily_snapshot_new, replication_snapshot)) {
+  remove_snapshot(path)
+}
 
 # An expired snapshot leaves a dangling store link that teardown still removes.
 expiring_snapshot <- file.path(base_store, ".snapshot", "expiring")
@@ -209,8 +224,7 @@ invisible(cli(
   "--base", base,
   "--source", expiring_snapshot
 ))
-stopifnot(system2("chmod", c("-R", "u+w", expiring_snapshot)) == 0L)
-unlink(expiring_snapshot, recursive = TRUE)
+remove_snapshot(expiring_snapshot)
 expired_status <- cli("status", "--project", worktree)
 stopifnot(any(grepl("^source status: +missing", expired_status)))
 expired_conversion <- cli_failure(
@@ -445,6 +459,8 @@ cat(
   "  configured nested store: yes\n",
   "  read-only default and selective conversion: yes\n",
   "  per-command option validation: yes\n",
+  "  teardown validates first and resumes: yes\n",
+  "  mixed snapshot families refused without a pattern: yes\n",
   "  expired snapshot reported and torn down: yes\n",
   "  failed conversion planning preserves read-only state: yes\n",
   "  managed/adopted runtime links: yes\n",

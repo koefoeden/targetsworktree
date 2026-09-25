@@ -163,14 +163,21 @@ The lock prevents two lifecycle commands from racing, but another raw
 the worktree store's recorded targets PID and refuses another live process.
 The current guarded R PID is accepted after an in-process local run.
 
+The PID check sees only processes on the current host, because `{targets}`
+records a process ID without a hostname. On a shared filesystem the launcher
+lock excludes guarded commands on other hosts, provided the filesystem supports
+`flock` across clients. A raw `tar_make()` on another host is not detectable.
+
 Raw `tar_make()` remains unsupported in selective mode. Filesystem snapshot
 immutability is the final protection if a raw file-target command accidentally
 opens a retained symlink.
 
 ## Teardown and recovery
 
-Teardown changes state to `removing`, checks for a live target process, and then
-handles only recorded paths:
+Teardown first validates every recorded path and checks for a live target
+process, so a refusal leaves the worktree ready. It then changes state to
+`removing` and handles only recorded paths, skipping any that are already gone
+so an interrupted teardown can resume:
 
 - snapshot store link: verify and unlink;
 - incomplete staging directory: move to quarantine;

@@ -299,6 +299,16 @@ latest_snapshot <- function(base_store, snapshot_pattern = NULL) {
     }
     Sys.sleep(0.2 * attempt)
   }
+  # Name order is only chronological within one naming family, so refuse to
+  # guess between families; a short-lived replication snapshot could win.
+  families <- unique(gsub("[0-9]+", "#", basename(candidates)))
+  if (is.null(snapshot_pattern) && length(families) > 1L) {
+    stop(
+      "Snapshots from several naming families exist under ", snapshot_root,
+      ":\n", paste(families, collapse = "\n"),
+      "\nChoose one with --snapshot-pattern."
+    )
+  }
   if (length(candidates) == 0L) {
     qualifier <- if (is.null(snapshot_pattern)) {
       ""
@@ -984,14 +994,51 @@ teardown <- function(project, recovering = FALSE) {
     if (!identical(state$stage, expected_stage)) {
       stop("Recorded staging path does not match its worktree state.")
     }
-  }
-  state$phase <- "removing"
-  write_state(state)
-
-  if (!is.null(state$stage) && occupied(state$stage)) {
-    if (!dir.exists(state$stage) || !is.na(link_value(state$stage))) {
+    if (
+      occupied(state$stage) &&
+        (!dir.exists(state$stage) || !is.na(link_value(state$stage)))
+    ) {
       stop("Recorded staging path is not a physical directory: ", state$stage)
     }
+  }
+
+  # Validate every recorded path before the first change, so a refusal leaves
+  # the worktree ready. Recorded paths that are already gone are skipped, which
+  # lets an interrupted teardown resume.
+  selective <- identical(state$mode, "writable-selective")
+  store_link <- link_matches(store, state$source)
+  store_physical <- selective && dir.exists(store) && is.na(link_value(store))
+  if (occupied(store) && !store_link && !store_physical) {
+    stop("Targets-store path does not match recorded mode: ", store)
+  }
+  if (store_physical && !recovering && active_targets_process(store)) {
+    stop("A targets process is active; refusing teardown.")
+  }
+  runtime <- state$runtime_links
+  links <- runtime[runtime$managed %in% TRUE, c("relative", "source"), drop = FALSE]
+  if (isTRUE(state$pixi$managed)) {
+    links <- rbind(links, data.frame(relative = ".pixi", source = state$pixi$source))
+  }
+  links$destination <- vapply(
+    links$relative,
+    safe_destination,
+    character(1),
+    root = state$project,
+    label = "Recorded link"
+  )
+  for (index in seq_len(nrow(links))) {
+    if (occupied(links$destination[[index]]) &&
+      !link_matches(links$destination[[index]], links$source[[index]])) {
+      stop(
+        "Managed symlink no longer points to its recorded source: ",
+        links$destination[[index]]
+      )
+    }
+  }
+
+  state$phase <- "removing"
+  write_state(state)
+  if (!is.null(state$stage) && occupied(state$stage)) {
     state$quarantine <- c(
       state$quarantine,
       quarantine_path(state, state$stage, "incomplete")
@@ -999,54 +1046,16 @@ teardown <- function(project, recovering = FALSE) {
     state$stage <- NULL
     write_state(state)
   }
-
-  if (
-    identical(state$mode, "writable-selective") &&
-      link_matches(store, state$source)
-  ) {
+  if (store_link) {
     remove_exact_link(store, state$source)
-  } else if (identical(state$mode, "read-only") && occupied(store)) {
-    remove_exact_link(store, state$source)
-  } else if (
-    identical(state$mode, "writable-selective") &&
-      dir.exists(store) &&
-      is.na(link_value(store))
-  ) {
-    if (!recovering && active_targets_process(store)) {
-      state$phase <- "ready"
-      write_state(state)
-      stop("A targets process is active; refusing teardown.")
-    }
-    state$quarantine <- c(
-      state$quarantine,
-      quarantine_path(state, store)
-    )
+  } else if (store_physical) {
+    state$quarantine <- c(state$quarantine, quarantine_path(state, store))
     write_state(state)
-  } else if (occupied(store)) {
-    stop("Targets-store path does not match recorded mode: ", store)
   }
-
-  runtime <- state$runtime_links
-  if (nrow(runtime) > 0L) {
-    for (index in rev(seq_len(nrow(runtime)))) {
-      if (isTRUE(runtime$managed[[index]])) {
-        destination <- safe_destination(
-          state$project,
-          runtime$relative[[index]],
-          "Recorded runtime link"
-        )
-        remove_exact_link(
-          destination,
-          runtime$source[[index]]
-        )
-      }
+  for (index in rev(seq_len(nrow(links)))) {
+    if (occupied(links$destination[[index]])) {
+      remove_exact_link(links$destination[[index]], links$source[[index]])
     }
-  }
-  if (isTRUE(state$pixi$managed)) {
-    remove_exact_link(
-      safe_destination(state$project, ".pixi", "Recorded Pixi link"),
-      state$pixi$source
-    )
   }
   receipt <- remove_state(state)
   list(

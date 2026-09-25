@@ -7,6 +7,10 @@
   the environment, so the launcher never rewrites a linked base environment.
 - Link the base `.pixi` only when the worktree and base lock files match, and
   use a worktree's own `.pixi` directory instead of refusing it.
+- Refuse automatic snapshot discovery across several naming families; pass
+  `--snapshot-pattern` to choose one.
+- Validate every recorded path before teardown changes anything, and skip
+  recorded links that are already gone so an interrupted teardown can resume.
 - Skip the project's R startup file for every command except `run`.
 - Validate options per command, and keep Git's stderr out of parsed output.
 

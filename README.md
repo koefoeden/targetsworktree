@@ -99,11 +99,12 @@ under:
 <base configured store>/.snapshot/*
 ```
 
-Lexicographic order is only meaningful within one naming family. When that
-directory contains several families, such as daily snapshots beside rotating
-replication snapshots, restrict discovery to one sortable family with a regular
-expression; otherwise a short-lived snapshot can win. Snapshots expire, so a
-long-lived worktree can outlive its source:
+Lexicographic order is only meaningful within one naming family, where names
+differ only in their digits. When that directory contains several families,
+such as daily snapshots beside rotating replication snapshots, discovery
+refuses to guess and lists the families; restrict it to one sortable family
+with a regular expression. Snapshots expire, so a long-lived worktree can
+outlive its source:
 
 ```bash
 ... configure \
@@ -249,7 +250,10 @@ still depend on it refuse to continue until the worktree is reconfigured.
 
 Teardown:
 
-- refuses a live targets process;
+- validates every recorded path before changing anything, so a refusal leaves
+  the worktree ready, and skips recorded links that are already gone, so an
+  interrupted teardown can be rerun;
+- refuses a live targets process on the current host;
 - removes only symlinks whose destinations and link text match recorded
   state, including links whose snapshot has since expired;
 - moves a writable store atomically to
@@ -283,6 +287,8 @@ The test creates a disposable nested-store targets project and verifies:
 - per-command option validation;
 - the read-only default and explicit selective conversion;
 - expired-source reporting and teardown;
+- refusal of mixed snapshot families without a pattern;
+- validate-first, resumable teardown;
 - Pixi linking only for matching lock files, and worktree environments;
 - preservation of read-only state after failed conversion planning;
 - immutable source selection and live-store rejection;
