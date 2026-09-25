@@ -107,8 +107,8 @@ in any run, which is why no endpoint set needs to be fixed.
 Each run:
 
 1. computes the dependency closure of the requested targets with
-   `tar_network()`, which only reads, so planning failures leave the worktree
-   unchanged;
+   `tar_network()` in the guarded R process, which only reads, so planning
+   failures leave the worktree unchanged;
 2. on the first run, converts the store: it copies only `meta/meta` into a
    recorded staging directory and atomically renames it into place;
 3. selects snapshot metadata rows owned by closure targets, including dynamic

@@ -365,13 +365,17 @@ resolve_source <- function(
   source
 }
 
+# The guarded process already runs in the project, so planning reads the
+# pipeline there instead of paying an R start-up per callr subprocess.
 target_graph <- function(project, target_names) {
   withr::with_dir(project, {
     targets::tar_network(
       targets_only = TRUE,
       names = tidyselect::all_of(target_names),
       outdated = FALSE,
-      reporter = "silent"
+      reporter = "silent",
+      callr_function = NULL,
+      envir = new.env(parent = globalenv())
     )
   })
 }
@@ -380,7 +384,9 @@ target_outdated <- function(project, target_names) {
   withr::with_dir(project, {
     targets::tar_outdated(
       names = tidyselect::all_of(target_names),
-      reporter = "silent"
+      reporter = "silent",
+      callr_function = NULL,
+      envir = new.env(parent = globalenv())
     )
   })
 }

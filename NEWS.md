@@ -4,6 +4,8 @@
   converts the worktree, and every run links the snapshot values its closure
   still shares with the snapshot, so any target can be run without
   reconfiguring. `run` now requires at least one `--target`.
+- Plan runs in the guarded R process instead of two callr subprocesses,
+  saving two R start-ups per run.
 
 # targetsworktree 0.1.2
 
