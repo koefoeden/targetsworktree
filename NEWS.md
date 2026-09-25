@@ -4,8 +4,16 @@
   converts the worktree, and every run links the snapshot values its closure
   still shares with the snapshot, so any target can be run without
   reconfiguring. `run` now requires at least one `--target`.
+- Lock the Git worktree when the first run converts it, and unlock it on
+  teardown. Git then refuses to remove a worktree holding rebuilt values, even
+  with a single `--force`, before teardown quarantines them. `status` reports
+  the lock.
 - Plan runs in the guarded R process instead of two callr subprocesses,
   saving two R start-ups per run.
+- Shorten the README to the commands and rules agents need.
+- Keep only integration checks whose failure would lose data or corrupt
+  shared state, and call commands in the test's R session unless the launcher
+  itself is under test.
 
 # targetsworktree 0.1.2
 

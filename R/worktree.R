@@ -36,6 +36,28 @@ git_path <- function(project, path) {
   output[[1L]]
 }
 
+# Git refuses to remove a locked worktree unless --force is given twice, so a
+# plain removal cannot delete the Git-ignored writable store before teardown.
+lock_reason <- "targetsworktree: run teardown before removing this worktree"
+
+worktree_locked <- function(project) {
+  file.exists(git_path(project, "locked"))
+}
+
+lock_worktree <- function(project) {
+  if (!worktree_locked(project)) {
+    git_output(project, "worktree", "lock", "--reason", shQuote(lock_reason), shQuote(project))
+  }
+}
+
+# A lock with another reason belongs to someone else and stays in place.
+unlock_worktree <- function(project) {
+  lock <- git_path(project, "locked")
+  if (file.exists(lock) && identical(readLines(lock, warn = FALSE), lock_reason)) {
+    git_output(project, "worktree", "unlock", shQuote(project))
+  }
+}
+
 safe_relative_path <- function(path, label = "Path") {
   if (
     !is.character(path) ||
@@ -636,6 +658,7 @@ rollback_conversion <- function(project) {
     ensure_link(store, state$source)
   }
 
+  unlock_worktree(state$project)
   state$mode <- "read-only"
   state$phase <- "ready"
   state$targets <- character()
@@ -699,6 +722,7 @@ convert_store <- function(state) {
   if (unlink(store) != 0L || !file.rename(stage, store)) {
     stop("Could not atomically install the writable targets store.")
   }
+  lock_worktree(state$project)
   state$stage <- NULL
   state$phase <- "ready"
   state$converted_at <- format(Sys.time(), tz = "UTC", usetz = TRUE)
@@ -966,6 +990,7 @@ teardown <- function(project, recovering = FALSE) {
       remove_exact_link(links$destination[[index]], links$source[[index]])
     }
   }
+  unlock_worktree(state$project)
   receipt <- remove_state(state)
   list(
     project = state$project,
@@ -995,6 +1020,7 @@ status <- function(project) {
     closure_targets = length(state$closure),
     outdated_targets = length(state$outdated),
     managed_links = nrow(state$links),
+    locked = worktree_locked(state$project),
     quarantine = state$quarantine
   )
 }

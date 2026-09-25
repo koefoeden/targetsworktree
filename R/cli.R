@@ -100,6 +100,7 @@ print_targets_worktree_status <- function(value) {
   cat(sprintf("%-18s %d\n", "closure targets:", value$closure_targets))
   cat(sprintf("%-18s %d\n", "outdated targets:", value$outdated_targets))
   cat(sprintf("%-18s %d\n", "managed links:", value$managed_links))
+  cat(sprintf("%-18s %s\n", "worktree locked:", if (value$locked) "yes" else "no"))
   if (!is.null(value$quarantine)) {
     cat(sprintf("%-18s %s\n", "quarantine:", value$quarantine))
   }

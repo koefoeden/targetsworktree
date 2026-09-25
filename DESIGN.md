@@ -61,6 +61,8 @@ Every mutating operation must preserve these invariants:
 9. Setup, conversion, reconciliation, execution, and teardown are mutually
    exclusive for each worktree.
 10. No operation promotes or deletes values in the base targets store.
+11. A worktree holding a writable store is locked in Git, so Git refuses to
+    remove it, and with it the Git-ignored store, before teardown.
 
 Automatic snapshot discovery may be restricted to one caller-supplied regular
 expression. A pattern with no complete match fails closed and never falls back
@@ -110,7 +112,8 @@ Each run:
    `tar_network()` in the guarded R process, which only reads, so planning
    failures leave the worktree unchanged;
 2. on the first run, converts the store: it copies only `meta/meta` into a
-   recorded staging directory and atomically renames it into place;
+   recorded staging directory, atomically renames it into place, and locks
+   the Git worktree;
 3. selects snapshot metadata rows owned by closure targets, including dynamic
    branches, whose worktree rows are still identical to the snapshot rows;
 4. links target objects and store-relative file outputs from those rows where
@@ -121,8 +124,8 @@ Each run:
 External and project-relative inputs remain where they are. Outdated outputs
 remain absent, so `{targets}` writes them physically.
 
-After conversion begins, ordinary R errors restore the snapshot link and
-quarantine physical partial results. If the process dies abruptly, the
+After conversion begins, ordinary R errors restore the snapshot link,
+quarantine physical partial results, and release the tool's lock. If the process dies abruptly, the
 persistent `converting` state identifies the exact staging path so teardown can
 quarantine it.
 
@@ -186,6 +189,8 @@ so an interrupted teardown can resume:
 - incomplete staging directory: move to quarantine;
 - selective writable store: move to quarantine;
 - runtime and Pixi links created by setup: verify and unlink;
+- Git worktree lock with this tool's reason: unlock; a lock with another
+  reason stays;
 - adopted pre-existing exact links: leave untouched.
 
 An RDS receipt is written before active state is removed. The command never
@@ -198,12 +203,15 @@ Target-aware links avoid copying complete stores and do not depend on a
 filesystem copy-on-write layer. Configured-store discovery also avoids assuming
 a conventional store name.
 
-The integration test is the executable contract. It covers nested stores,
-snapshot selection, read-only inspection, selective object and file reuse,
-dynamic branches, reconciliation, lock and process exclusion, path containment,
-rollback, expired sources, Pixi link rules, immutable-source checksums, and
-quarantine-first teardown. The Pixi launcher path is not exercised because the
-test uses `TARGETS_WORKTREE_RSCRIPT`.
+The integration test is the executable contract. It checks only behaviour
+whose failure would lose data or corrupt shared state: refused sources and
+paths, snapshot-family selection, expired sources, Pixi link rules, launcher
+and process exclusion, failed planning, selective object, file, and branch
+reuse, physical rebuilds with unchanged snapshot checksums, the worktree lock,
+and validate-first, quarantine-first teardown. It calls commands in its own R
+session except where the launcher itself is under test: its lock and the
+guarded runs. The Pixi launcher path is not exercised because the test uses
+`TARGETS_WORKTREE_RSCRIPT`.
 
 ## Deliberate boundaries
 

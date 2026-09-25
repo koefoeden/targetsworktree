@@ -1,282 +1,149 @@
 # targetsworktree
 
-`targetsworktree` is an R package that gives a Git worktree its own safe
-`{targets}` environment without copying an entire pipeline store. It is
-pipeline-independent and reads the store path from the worktree's
-`_targets.yaml` through `targets::tar_config_get("store")`.
+`targetsworktree` gives an existing Git worktree of a `{targets}` pipeline its
+own safe targets store, backed by an immutable snapshot of the base store
+instead of a full copy. It is pipeline-independent and finds the store through
+`targets::tar_config_get("store")`. [DESIGN.md](DESIGN.md) holds the safety
+invariants, recovery rules, and rationale.
 
-See [DESIGN.md](DESIGN.md) for the safety invariants, reconciliation rules,
-failure recovery, rationale, and deliberate boundaries.
+Use it only when a worktree must read the targets store or run targets. Leave
+worktrees for code, documentation, Git operations, or store-independent checks
+unconfigured. Git still creates, merges, and removes worktrees and branches.
 
-The command manages the targets environment inside an existing Git worktree.
-Git remains responsible for creating, merging, and removing the worktree
-itself.
+## Install
 
-Do not run `configure` merely because a Git worktree was created. A worktree
-used only for code or documentation editing, Git operations, or
-store-independent validation should remain a plain, unconfigured Git worktree.
-Use this command only when the worktree needs targets-store inspection or
-target execution; every configuration attaches a targets store.
-
-## Installation
-
-Install a tagged version from GitHub:
+Install into the R environment of the base checkout:
 
 ```r
-remotes::install_github("koefoeden/targetsworktree@v0.1.2")
+remotes::install_github("koefoeden/targetsworktree@v0.2.0")
 ```
 
-The R environment used by the base checkout must contain `targetsworktree` and
-its imports.
-
 ## Lifecycle
-
-Only worktrees that need targets-store support enter the managed lifecycle.
-Every managed worktree follows one route:
 
 ```text
 unconfigured -> read-only -> writable-selective -> teardown
 ```
 
-`configure` always creates a read-only worktree whose configured store is a
-symlink to an immutable snapshot and immediately supports inspection and
-`tar_read()`. There is no separate managed code-only or bare mode; ordinary
-code-only worktrees stay outside this tool.
+| Step | Command | Effect |
+|---|---|---|
+| Configure | `configure` | Links the store to a snapshot, for `tar_read()` and other inspection. |
+| First run | `run` | Replaces the link with a writable store and locks the Git worktree. |
+| Later runs | `run` | Links the snapshot values each run needs; rebuilt values stay physical. |
+| Teardown | `teardown` | Quarantines the writable store and removes the tool's links and lock. |
 
-The first `run` converts the worktree: it replaces the store link with a
-writable store holding a copy of the snapshot metadata. Each run then links the
-snapshot values its targets need, so any target can be run at any time without
-reconfiguring. Conversion preserves the worktree's Pixi and runtime-link setup.
+Then remove the unconfigured worktree with `git worktree remove`.
 
-The base checkout and worktree must belong to the same Git repository and must
-configure the same relative targets store. The command refuses to configure the
-base checkout itself.
+**The lock.** Git ignores the writable store, so a plain `git worktree remove`
+would delete every value the worktree rebuilt, without a prompt. The lock makes
+Git refuse, even with the single `--force` that editors such as VS Code pass:
 
-## Launcher
+```text
+cannot remove a locked working tree, lock reason: targetsworktree: run teardown before removing this worktree
+```
 
-Resolve and use the installed executable. Lifecycle functions are deliberately
-internal because the shell launcher owns locking:
+Run `teardown` rather than overriding the lock. `status` and
+`git worktree list` show it, and teardown removes only a lock with this reason.
+
+## Commands
+
+Resolve the launcher from the base checkout's R environment and always use it.
+It holds a per-worktree `flock` for every command, and runs R through
+`pixi run --as-is` with the manifest that owns the environment, so it never
+installs or updates one. It loads the project's R startup file only for `run`.
+Run `pixi install` before configuring, or set
+`TARGETS_WORKTREE_RSCRIPT=/path/to/Rscript` for a project without Pixi.
 
 ```bash
 targets_worktree_tool=$(Rscript --vanilla -e \
   'cat(targetsworktree::targets_worktree_executable())')
-
-"$targets_worktree_tool" configure \
-  --project /path/to/pipeline-worktree \
-  --base /path/to/pipeline
 ```
 
-The launcher:
-
-1. resolves the Git worktree;
-2. takes a non-waiting `flock` in that worktree's Git administrative directory;
-3. runs R with `pixi run --as-is` through the project that owns the Pixi
-   environment: the base during initial setup, and the base again later when
-   the worktree links its `.pixi`;
-4. skips the project's R startup file except for guarded runs.
-
-`--as-is` never installs or updates an environment, so the launcher cannot
-rewrite a shared base environment to match an older worktree lock file. Install
-the environment with `pixi install` before configuring. Set
-`TARGETS_WORKTREE_RSCRIPT=/path/to/Rscript` for projects that do not use Pixi.
-
-The lock covers setup, conversion, reconciliation, target execution, and
-teardown. Raw `tar_make()` bypasses this protection and is unsupported in
-`writable-selective` mode.
-
-## Configure a worktree
+### configure
 
 ```bash
-"$targets_worktree_tool" configure \
-  --project /path/to/pipeline-worktree \
-  --base /path/to/pipeline
+"$targets_worktree_tool" configure --project WORKTREE --base BASE_CHECKOUT \
+  [--snapshot-pattern REGEX | --source STORE] [--link PATH=SOURCE ...]
 ```
 
-By default, the command chooses the lexicographically latest complete store
-under:
+- The worktree and base must belong to one repository and configure the same
+  store. The base checkout itself is refused.
+- By default the latest complete snapshot under `<base store>/.snapshot/` is
+  used. If several naming families exist there, such as dailies beside
+  replication snapshots, configuration refuses to guess: pass
+  `--snapshot-pattern` for one family. A pattern without a match fails; there
+  is no fallback.
+- `--source` must lie under a `.snapshot` path or have read-only metadata. The
+  live base store is always refused.
+- `--link` adds a runtime symlink at a repository-relative path. An identical
+  existing link is adopted but not owned; any other existing path conflicts.
+- Pixi: a worktree with its own `.pixi` keeps it. Otherwise the base `.pixi`
+  is linked, but only when both `pixi.lock` files match. In a linked worktree,
+  run Pixi only with `--as-is` or `--frozen --no-install`, or it can rewrite the
+  shared environment.
 
-```text
-<base configured store>/.snapshot/*
-```
-
-Lexicographic order is only meaningful within one naming family, where names
-differ only in their digits. When that directory contains several families,
-such as daily snapshots beside rotating replication snapshots, discovery
-refuses to guess and lists the families; restrict it to one sortable family
-with a regular expression. Snapshots expire, so a long-lived worktree can
-outlive its source:
+### run
 
 ```bash
-... configure \
-  ... \
-  --snapshot-pattern '^daily-[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+"$targets_worktree_tool" run --project WORKTREE \
+  --target NAME [--target NAME ...] [--local]
 ```
 
-Discovery retries a transient empty listing three times. If no complete
-snapshot matches the pattern, configuration fails rather than falling back to
-another snapshot family.
+- Planning only reads, so an unknown target or a broken pipeline leaves the
+  worktree unchanged.
+- Each run links the snapshot values of the requested targets and their
+  dependencies whose metadata still matches the snapshot, unlinks those whose
+  targets are outdated, and runs `tar_make()` under the lock.
+- `--local` uses a one-worker local Crew controller, for small runs in the
+  current allocation or on the head node. Otherwise the pipeline's controllers
+  apply.
+- Never run raw `tar_make()` in a converted worktree: it bypasses the lock and
+  the checks that keep writes out of the snapshot.
 
-Use an explicit source when needed:
+### status
 
 ```bash
-... configure ... --source /path/to/immutable/store
+"$targets_worktree_tool" status --project WORKTREE
 ```
 
-An explicit source must either be under a `.snapshot` path or have non-writable
-targets metadata. The live base store is always rejected. `--source` and
-`--snapshot-pattern` are mutually exclusive.
+Reports the mode, phase, store, source, targets run, link counts, lock, and
+quarantine. `source status: missing` means the snapshot has expired: runs
+refuse, but teardown still works, after which the worktree can be configured
+again. State
+lives in the worktree's Git administrative directory, never in the worktree or
+its store.
 
-If the base has `.pixi` and the worktree has no environment of its own, the tool
-links the base environment into the worktree. An existing symlink to that exact
-environment is accepted but not claimed as tool-owned. Linking requires the
-worktree's `pixi.lock` to match the base's: otherwise Pixi would rewrite the
-shared environment the next time it runs in the worktree. Run `pixi install` in
-the worktree to give it its own environment instead; a worktree `.pixi`
-directory is used as it is. Other existing paths fail closed.
-
-Even with matching lock files, a linked worktree shares the base environment.
-Run Pixi there only with `--as-is` or `--frozen --no-install`, or through the
-launcher, so a later lock-file change cannot update the base environment. The
-immutable store supports target inspection while refusing pipeline writes.
-
-## Run targets
-
-Name the targets to make; repeat `--target` as needed:
+### teardown
 
 ```bash
-"$targets_worktree_tool" run \
-  --project /path/to/pipeline-worktree \
-  --target endpoint_a \
-  --target endpoint_b
+"$targets_worktree_tool" teardown --project WORKTREE
+git worktree remove WORKTREE
 ```
 
-Each run:
+Teardown validates every recorded path and refuses while a targets process is
+live, so a refusal leaves the worktree ready. An interrupted teardown can be
+rerun. It then:
 
-1. refuses another live targets process in the worktree;
-2. computes the targets' dependency closure, which only reads, so an unknown
-   target or a broken pipeline leaves the worktree unchanged;
-3. on the first run, converts the store by copying only `meta/meta`;
-4. links each closure value whose worktree metadata row is still the row copied
-   from the snapshot, covering target objects and store-relative file outputs;
-5. lets `tar_outdated()` compare those values with the current worktree code,
-   and removes only recorded links whose owner targets are outdated;
-6. runs `tar_make()` while retaining the lifecycle lock.
+- moves a writable store to `<worktree parent>/.targets-worktree-quarantine/`;
+- removes only the symlinks it recorded, including links to expired snapshots;
+- removes its Git worktree lock;
+- writes a receipt and removes the state record.
 
-Values the worktree has rebuilt are never replaced by links, and outdated
-values stay absent so `{targets}` writes them physically. External absolute and
-repository-relative inputs are referenced in place. Links that were redirected
-to an unexpected source are refused. A later run with other targets links their
-closure on demand. If conversion fails after it begins, the tool restores the
-read-only store link and quarantines any physical partial result.
-
-Use `--local` for a deliberately small head-node run:
-
-```bash
-"$targets_worktree_tool" run \
-  --project /path/to/pipeline-worktree \
-  --target small_target \
-  --local
-```
-
-This installs a one-worker local Crew controller for the guarded R process and
-restores the pipeline controller option afterward. Without `--local`, the
-pipeline's normal controller configuration applies.
-
-## Extra runtime links
-
-Some projects need untracked runtime paths in addition to their targets store.
-Supply each explicitly:
-
-```bash
-... configure ... \
-  --link relative/path=/absolute/immutable/source
-```
-
-The destination must be a safe repository-relative path. An exact existing
-symlink is accepted without claiming ownership; a regular file, directory, or
-different symlink is a conflict. Teardown removes only links that this setup
-created.
-
-This keeps project-specific paths out of the shared implementation. A
-downstream repository can provide a short wrapper with its standard `--link`
-arguments.
-
-## Status
-
-```bash
-"$targets_worktree_tool" status \
-  --project /path/to/pipeline-worktree
-```
-
-State is stored outside the worktree and targets store, under:
-
-```bash
-git -C /path/to/pipeline-worktree \
-  rev-parse --path-format=absolute --git-path targets-worktree/state.rds
-```
-
-It records the mode, configured store, source, targets run so far, their closure, managed links,
-and ownership of `.pixi` and runtime links. Status reports a recorded source
-that no longer exists, such as an expired snapshot; conversion and runs that
-still depend on it refuse to continue until the worktree is reconfigured.
-
-## Teardown
-
-```bash
-"$targets_worktree_tool" teardown \
-  --project /path/to/pipeline-worktree
-```
-
-Teardown:
-
-- validates every recorded path before changing anything, so a refusal leaves
-  the worktree ready, and skips recorded links that are already gone, so an
-  interrupted teardown can be rerun;
-- refuses a live targets process on the current host;
-- removes only symlinks whose destinations and link text match recorded
-  state, including links whose snapshot has since expired;
-- moves a writable store atomically to
-  `<worktree-parent>/.targets-worktree-quarantine/`;
-- saves a teardown receipt in the worktree's Git administrative directory;
-- removes the active state record.
-
-It never deletes a writable store, calls `rsync --delete`, removes a Git
-worktree, or deletes a branch. After restoring or committing ordinary code
-changes, remove the now-unconfigured worktree normally:
-
-```bash
-git worktree remove /path/to/pipeline-worktree
-```
-
-Quarantined stores are retained until a human explicitly decides they are no
-longer needed.
+It never deletes a store, the worktree, or a branch. Quarantined stores stay
+until a human decides they are no longer needed. Commit or restore code changes
+before removing the worktree.
 
 ## Tests
-
-Build and check the package through an R environment that provides its imports:
 
 ```bash
 R CMD build .
 R CMD check --no-manual targetsworktree_*.tar.gz
 ```
 
-The test creates a disposable nested-store targets project and verifies:
+`tests/integration.R` runs the full lifecycle on a disposable pipeline, is the
+executable contract, and prints each property it verifies. To iterate faster,
+run it alone from a temporary library:
 
-- side-effect-free status checks before configuration;
-- per-command option validation;
-- the read-only default and conversion on the first run;
-- on-demand linking across runs and after rebuilds;
-- expired-source reporting and teardown;
-- refusal of mixed snapshot families without a pattern;
-- validate-first, resumable teardown;
-- Pixi linking only for matching lock files, and worktree environments;
-- preservation of read-only state after failed conversion planning;
-- immutable source selection and live-store rejection;
-- exclusive launcher locking and foreign live-target PID rejection;
-- containment through existing symlink ancestors;
-- managed versus adopted runtime-link teardown;
-- selective target-object and file-target reuse;
-- dynamic branch ownership and rebuilding;
-- reconciliation after a file-target command changes;
-- physical scratch writes and unchanged source checksums;
-- quarantine-first teardown.
+```bash
+lib=$(mktemp -d) && R CMD INSTALL --library="$lib" . &&
+  R_LIBS="$lib" Rscript tests/integration.R
+```
