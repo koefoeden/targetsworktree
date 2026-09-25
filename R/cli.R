@@ -19,28 +19,26 @@ targets_worktree_usage <- function() {
   invisible(NULL)
 }
 
-parse_targets_worktree_options <- function(values) {
-  output <- list(
-    project = getwd(),
-    base = NULL,
-    source = NULL,
-    snapshot_pattern = NULL,
-    target = character(),
-    link = character(),
-    local = FALSE
-  )
+command_options <- list(
+  configure = c("project", "base", "source", "snapshot-pattern", "link"),
+  convert = c("project", "target"),
+  status = "project",
+  run = c("project", "target", "local"),
+  teardown = "project"
+)
+
+parse_targets_worktree_options <- function(command, values) {
+  allowed <- command_options[[command]]
+  if (is.null(allowed)) {
+    stop("Unknown command: ", command)
+  }
+  output <- list(target = character(), link = character(), local = FALSE)
   index <- 1L
   while (index <= length(values)) {
     option <- values[[index]]
-    if (!startsWith(option, "--")) {
-      stop("Unexpected argument: ", option)
-    }
-    name <- substring(option, 3L)
-    if (name == "snapshot-pattern") {
-      name <- "snapshot_pattern"
-    }
-    if (!name %in% names(output)) {
-      stop("Unknown option: ", option)
+    name <- sub("^--", "", option)
+    if (identical(name, option) || !name %in% allowed) {
+      stop("Unexpected argument for ", command, ": ", option)
     }
     if (name == "local") {
       output$local <- TRUE
@@ -53,14 +51,14 @@ parse_targets_worktree_options <- function(values) {
     value <- values[[index + 1L]]
     if (name %in% c("target", "link")) {
       output[[name]] <- c(output[[name]], value)
+    } else if (!is.null(output[[name]])) {
+      stop("Option supplied more than once: ", option)
     } else {
-      if (!is.null(output[[name]]) && name != "project") {
-        stop("Option supplied more than once: ", option)
-      }
       output[[name]] <- value
     }
     index <- index + 2L
   }
+  output$project <- output$project %||% getwd()
   output
 }
 
@@ -95,6 +93,9 @@ print_targets_worktree_status <- function(value) {
       label <- gsub("_", " ", name, fixed = TRUE)
       cat(sprintf("%-18s %s\n", paste0(label, ":"), paste(item, collapse = ", ")))
     }
+    if (name == "source" && isTRUE(value$source_missing)) {
+      cat(sprintf("%-18s %s\n", "source status:", "missing (snapshot expired?)"))
+    }
   }
   cat(sprintf("%-18s %s\n", "targets:", paste(value$targets, collapse = ", ")))
   cat(sprintf("%-18s %d\n", "closure targets:", value$closure_targets))
@@ -114,7 +115,7 @@ targets_worktree_cli <- function(arguments = commandArgs(trailingOnly = TRUE)) {
   require_targets_worktree_lock()
 
   command <- arguments[[1L]]
-  options <- parse_targets_worktree_options(arguments[-1L])
+  options <- parse_targets_worktree_options(command, arguments[-1L])
 
   if (command == "configure") {
     if (is.null(options$base)) {
@@ -124,7 +125,7 @@ targets_worktree_cli <- function(arguments = commandArgs(trailingOnly = TRUE)) {
       project = options$project,
       base = options$base,
       source = options$source,
-      snapshot_pattern = options$snapshot_pattern,
+      snapshot_pattern = options[["snapshot-pattern"]],
       runtime_links = parse_targets_worktree_links(options$link)
     )
     print_targets_worktree_status(result)
@@ -153,8 +154,6 @@ targets_worktree_cli <- function(arguments = commandArgs(trailingOnly = TRUE)) {
       }
     }
     cat("receipt:", result$receipt, "\n")
-  } else {
-    stop("Unknown command: ", command)
   }
   invisible(NULL)
 }

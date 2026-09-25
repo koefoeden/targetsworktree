@@ -44,16 +44,22 @@ if [ -n "${TARGETS_WORKTREE_RSCRIPT:-}" ]; then
   runner=("$TARGETS_WORKTREE_RSCRIPT")
 elif [ -f "$runner_project/pixi.toml" ]; then
   command -v pixi >/dev/null || die "pixi is required for this project"
-  runner=(
-    pixi run --frozen --manifest-path "$runner_project/pixi.toml"
-    Rscript
-  )
+  # Activate the environment through the project that owns it; a configured
+  # worktree links the base .pixi. --as-is never installs or updates it.
+  pixi_project=$runner_project
+  if [ -L "$runner_project/.pixi" ]; then
+    pixi_project=$(dirname "$(readlink -f "$runner_project/.pixi")")
+  fi
+  [ -d "$pixi_project/.pixi" ] ||
+    die "no installed Pixi environment in $pixi_project; run pixi install there"
+  runner=(pixi run --as-is --manifest-path "$pixi_project/pixi.toml" Rscript)
 else
   command -v Rscript >/dev/null || die "Rscript is not available"
   runner=(Rscript)
 fi
 
-if [ "${arguments[0]-}" = configure ] || [ "${arguments[0]-}" = status ]; then
+# Only a guarded run may need the project's startup file.
+if [ "${arguments[0]-}" != run ]; then
   runner+=(--no-init-file)
 fi
 

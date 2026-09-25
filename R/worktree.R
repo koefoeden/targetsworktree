@@ -9,15 +9,11 @@ normalize_directory <- function(path, label) {
 }
 
 git_output <- function(project, ...) {
-  output <- system2(
-    "git",
-    c("-C", shQuote(project), ...),
-    stdout = TRUE,
-    stderr = TRUE
-  )
+  # Git's stderr stays on the console so warnings never reach parsed output.
+  output <- system2("git", c("-C", shQuote(project), ...), stdout = TRUE)
   status <- attr(output, "status")
   if (!is.null(status) && status != 0L) {
-    stop(paste(output, collapse = "\n"))
+    stop("git failed in ", project, " with exit status ", status, ".")
   }
   output
 }
@@ -62,11 +58,7 @@ safe_destination <- function(root, relative, label = "Destination") {
   relative <- safe_relative_path(relative, label)
   destination <- file.path(root, relative)
   ancestor <- dirname(destination)
-  while (
-    !file.exists(ancestor) &&
-      !dir.exists(ancestor) &&
-      is.na(link_value(ancestor))
-  ) {
+  while (!occupied(ancestor)) {
     parent <- dirname(ancestor)
     if (identical(parent, ancestor)) {
       stop(label, " has no resolvable parent: ", destination)
@@ -160,17 +152,32 @@ link_value <- function(path) {
   if (is.na(value) || !nzchar(value)) NA_character_ else value
 }
 
+occupied <- function(path) {
+  file.exists(path) || !is.na(link_value(path))
+}
+
+# A symlink matches when its text is the recorded source, so a managed link
+# stays recognizable after its source disappears, such as an expired snapshot.
+# Resolved equality also accepts adopted links and pre-0.1.2 link text.
+link_matches <- function(path, source) {
+  current <- link_value(path)
+  !is.na(current) &&
+    (identical(current, source) ||
+      (file.exists(path) && file.exists(source) && same_path(path, source)))
+}
+
 ensure_link <- function(destination, source) {
-  source <- normalizePath(source, mustWork = TRUE)
-  current <- link_value(destination)
-  if (!is.na(current)) {
-    if (!same_path(destination, source)) {
+  if (!is.na(link_value(destination))) {
+    if (!link_matches(destination, source)) {
       stop("Conflicting symlink: ", destination)
     }
     return(FALSE)
   }
-  if (file.exists(destination) || dir.exists(destination)) {
+  if (file.exists(destination)) {
     stop("Conflicting existing path: ", destination)
+  }
+  if (!file.exists(source)) {
+    stop("Symlink source does not exist: ", source)
   }
   dir.create(dirname(destination), recursive = TRUE, showWarnings = FALSE)
   if (!file.symlink(source, destination)) {
@@ -180,11 +187,10 @@ ensure_link <- function(destination, source) {
 }
 
 remove_exact_link <- function(destination, source) {
-  current <- link_value(destination)
-  if (is.na(current)) {
+  if (is.na(link_value(destination))) {
     stop("Expected a managed symlink: ", destination)
   }
-  if (!same_path(destination, source)) {
+  if (!link_matches(destination, source)) {
     stop("Managed symlink no longer points to its recorded source: ", destination)
   }
   if (unlink(destination) != 0L) {
@@ -327,7 +333,7 @@ resolve_source <- function(
   if (!file.exists(file.path(source, "meta", "meta"))) {
     stop("Targets metadata is missing from source: ", source)
   }
-  if (same_path(source, base_store)) {
+  if (dir.exists(base_store) && same_path(source, base_store)) {
     stop("The live base targets store cannot be used as a source.")
   }
   snapshot_root <- file.path(base_store, ".snapshot")
@@ -399,7 +405,7 @@ expand_file_rows <- function(metadata) {
 plan_snapshot <- function(project, target_names, source) {
   store_relative <- configured_store(project)
   store <- safe_destination(project, store_relative, "Configured targets store")
-  if (is.na(link_value(store)) || !same_path(store, source)) {
+  if (!link_matches(store, source)) {
     stop("Snapshot planning requires the configured store to link to the source.")
   }
 
@@ -507,14 +513,14 @@ plan_snapshot <- function(project, target_names, source) {
 
 materialize_plan <- function(project, store_relative, source, plan, stage) {
   store <- safe_destination(project, store_relative, "Configured targets store")
-  if (is.na(link_value(store)) || !same_path(store, source)) {
+  if (!link_matches(store, source)) {
     stop("Planning symlink changed before materialization.")
   }
   if (unlink(store) != 0L) {
     stop("Could not remove planning symlink.")
   }
 
-  if (file.exists(stage) || dir.exists(stage) || !is.na(link_value(stage))) {
+  if (occupied(stage)) {
     stop("Staging path already exists: ", stage)
   }
   dir.create(file.path(stage, "meta"), recursive = TRUE)
@@ -588,22 +594,29 @@ configure <- function(
       " mode. Teardown before reconfiguration."
     )
   }
-  if (file.exists(store) || dir.exists(store) || !is.na(link_value(store))) {
+  if (occupied(store)) {
     stop("Configured targets-store path already exists: ", store)
   }
 
-  pixi_source <- file.path(base, ".pixi")
+  # A worktree with its own environment keeps it. Otherwise it links the base
+  # environment, which is only safe while both checkouts lock the same
+  # packages: Pixi would rewrite the shared environment to match the worktree.
+  pixi_source <- normalizePath(file.path(base, ".pixi"), mustWork = FALSE)
   pixi_destination <- file.path(project, ".pixi")
-  pixi_available <- dir.exists(pixi_source)
-  if (
-    pixi_available &&
-      (file.exists(pixi_destination) ||
-        dir.exists(pixi_destination) ||
-        !is.na(link_value(pixi_destination))) &&
-      (is.na(link_value(pixi_destination)) ||
-        !same_path(pixi_destination, pixi_source))
-  ) {
-    stop("Conflicting worktree .pixi path.")
+  own_pixi <- dir.exists(pixi_destination) && is.na(link_value(pixi_destination))
+  link_pixi <- dir.exists(pixi_source) && !own_pixi
+  if (link_pixi) {
+    if (occupied(pixi_destination) && !link_matches(pixi_destination, pixi_source)) {
+      stop("Conflicting worktree .pixi path.")
+    }
+    locks <- file.path(c(base, project), "pixi.lock")
+    if (all(file.exists(locks)) && length(unique(tools::md5sum(locks))) != 1L) {
+      stop(
+        "The worktree pixi.lock differs from the base, so Pixi could rewrite ",
+        "the linked base environment. Align the lock files, or run ",
+        "`pixi install` in the worktree to give it its own environment."
+      )
+    }
   }
   for (index in seq_len(nrow(runtime))) {
     destination <- safe_destination(
@@ -611,14 +624,7 @@ configure <- function(
       runtime$relative[[index]],
       "Runtime link path"
     )
-    source_path <- runtime$source[[index]]
-    if (
-      (file.exists(destination) ||
-        dir.exists(destination) ||
-        !is.na(link_value(destination))) &&
-        (is.na(link_value(destination)) ||
-          !same_path(destination, source_path))
-    ) {
+    if (occupied(destination) && !link_matches(destination, runtime$source[[index]])) {
       stop("Conflicting runtime path: ", destination)
     }
   }
@@ -645,7 +651,7 @@ configure <- function(
     outdated = character(),
     links = data.frame(),
     pixi = list(
-      source = if (pixi_available) normalizePath(pixi_source) else NULL,
+      source = if (link_pixi) pixi_source else NULL,
       managed = FALSE
     ),
     runtime_links = runtime,
@@ -664,7 +670,7 @@ configure <- function(
     }
   }, add = TRUE)
 
-  if (pixi_available) {
+  if (link_pixi) {
     state$pixi$managed <- ensure_link(pixi_destination, pixi_source)
     write_state(state)
   }
@@ -697,11 +703,7 @@ rollback_conversion <- function(project) {
     "Recorded targets store"
   )
 
-  if (
-    !is.null(state$stage) &&
-      (file.exists(state$stage) || dir.exists(state$stage) ||
-        !is.na(link_value(state$stage)))
-  ) {
+  if (!is.null(state$stage) && occupied(state$stage)) {
     if (!dir.exists(state$stage) || !is.na(link_value(state$stage))) {
       stop("Failed conversion left an unexpected staging path: ", state$stage)
     }
@@ -711,9 +713,8 @@ rollback_conversion <- function(project) {
     )
   }
 
-  current <- link_value(store)
-  if (!is.na(current)) {
-    if (!same_path(store, state$source)) {
+  if (!is.na(link_value(store))) {
+    if (!link_matches(store, state$source)) {
       stop("Failed conversion left an unexpected targets-store symlink: ", store)
     }
   } else if (dir.exists(store)) {
@@ -755,9 +756,10 @@ convert <- function(project, target_names) {
     state$store_relative,
     "Recorded targets store"
   )
-  if (is.na(link_value(store)) || !same_path(store, state$source)) {
+  if (!link_matches(store, state$source)) {
     stop("Read-only store no longer links to its recorded source.")
   }
+  require_source(state)
 
   # Planning is read-only. A planning failure therefore leaves the original
   # worktree state and store link untouched.
@@ -766,7 +768,7 @@ convert <- function(project, target_names) {
     dirname(store),
     paste0(".", basename(store), ".targets-worktree-stage-", state$id)
   )
-  if (file.exists(stage) || dir.exists(stage) || !is.na(link_value(stage))) {
+  if (occupied(stage)) {
     stop("Conversion staging path already exists: ", stage)
   }
 
@@ -812,6 +814,15 @@ convert <- function(project, target_names) {
   write_state(state)
   rollback <- FALSE
   status(state$project)
+}
+
+require_source <- function(state) {
+  if (!dir.exists(state$source)) {
+    stop(
+      "The recorded source no longer exists: ", state$source,
+      "\nIts snapshot may have expired. Teardown and configure again."
+    )
+  }
 }
 
 owner_outdated <- function(links, outdated) {
@@ -861,6 +872,7 @@ reconcile <- function(project, target_names = NULL) {
   outdated <- if (nrow(state$links) == 0L) {
     character()
   } else {
+    require_source(state)
     target_outdated(state$project, target_names)
   }
   remove <- owner_outdated(state$links, outdated)
@@ -877,14 +889,14 @@ reconcile <- function(project, target_names = NULL) {
     if (remove[[index]]) {
       if (!is.na(current)) {
         remove_exact_link(destination, source)
-      } else if (file.exists(destination) || dir.exists(destination)) {
+      } else if (file.exists(destination)) {
         retained[[index]] <- FALSE
       }
     } else if (!is.na(current)) {
-      if (!same_path(destination, source)) {
+      if (!link_matches(destination, source)) {
         stop("Managed link points to an unexpected source: ", destination)
       }
-    } else if (file.exists(destination) || dir.exists(destination)) {
+    } else if (file.exists(destination)) {
       retained[[index]] <- FALSE
     } else {
       ensure_link(destination, source)
@@ -943,7 +955,7 @@ quarantine_path <- function(state, path, suffix = NULL) {
       if (is.null(suffix)) "" else paste0("-", suffix)
     )
   )
-  if (file.exists(destination) || dir.exists(destination)) {
+  if (occupied(destination)) {
     stop("Quarantine destination already exists: ", destination)
   }
   if (!file.rename(path, destination)) {
@@ -976,11 +988,7 @@ teardown <- function(project, recovering = FALSE) {
   state$phase <- "removing"
   write_state(state)
 
-  if (
-    !is.null(state$stage) &&
-      (file.exists(state$stage) || dir.exists(state$stage) ||
-        !is.na(link_value(state$stage)))
-  ) {
+  if (!is.null(state$stage) && occupied(state$stage)) {
     if (!dir.exists(state$stage) || !is.na(link_value(state$stage))) {
       stop("Recorded staging path is not a physical directory: ", state$stage)
     }
@@ -994,12 +1002,10 @@ teardown <- function(project, recovering = FALSE) {
 
   if (
     identical(state$mode, "writable-selective") &&
-      !is.na(link_value(store)) &&
-      same_path(store, state$source)
+      link_matches(store, state$source)
   ) {
     remove_exact_link(store, state$source)
-  } else if (identical(state$mode, "read-only") &&
-    (file.exists(store) || dir.exists(store) || !is.na(link_value(store)))) {
+  } else if (identical(state$mode, "read-only") && occupied(store)) {
     remove_exact_link(store, state$source)
   } else if (
     identical(state$mode, "writable-selective") &&
@@ -1016,9 +1022,7 @@ teardown <- function(project, recovering = FALSE) {
       quarantine_path(state, store)
     )
     write_state(state)
-  } else if (
-    file.exists(store) || dir.exists(store) || !is.na(link_value(store))
-  ) {
+  } else if (occupied(store)) {
     stop("Targets-store path does not match recorded mode: ", store)
   }
 
@@ -1067,6 +1071,7 @@ status <- function(project) {
     phase = state$phase,
     store = store,
     source = state$source,
+    source_missing = !dir.exists(state$source),
     snapshot_pattern = state$snapshot_pattern,
     targets = state$targets,
     closure_targets = length(state$closure),

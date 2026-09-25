@@ -1,6 +1,6 @@
 Package: targetsworktree
 Title: Safe Targets Stores for Git Worktrees
-Version: 0.1.1
+Version: 0.1.2
 Authors@R: person(
     given = "Thomas",
     family = "Gade Koefoed",

@@ -1,3 +1,15 @@
+# targetsworktree 0.1.2
+
+- Identify managed symlinks by their link text, so teardown still removes a
+  store link after its snapshot has expired. Status reports a missing source,
+  and conversion and runs that need it stop with that reason.
+- Run R through `pixi run --as-is` with the manifest of the project that owns
+  the environment, so the launcher never rewrites a linked base environment.
+- Link the base `.pixi` only when the worktree and base lock files match, and
+  use a worktree's own `.pixi` directory instead of refusing it.
+- Skip the project's R startup file for every command except `run`.
+- Validate options per command, and keep Git's stderr out of parsed output.
+
 # targetsworktree 0.1.1
 
 - Use the package namespace directly instead of retaining the pre-package

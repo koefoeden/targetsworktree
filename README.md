@@ -20,10 +20,10 @@ target execution; every configuration attaches a targets store.
 
 ## Installation
 
-Install a tagged version from the private GitHub repository:
+Install a tagged version from GitHub:
 
 ```r
-remotes::install_github("koefoeden/targetsworktree@v0.1.1")
+remotes::install_github("koefoeden/targetsworktree@v0.1.2")
 ```
 
 The R environment used by the base checkout must contain `targetsworktree` and
@@ -70,11 +70,15 @@ The launcher:
 
 1. resolves the Git worktree;
 2. takes a non-waiting `flock` in that worktree's Git administrative directory;
-3. uses the base pipeline's frozen Pixi environment during initial setup;
-4. runs later commands from the worktree and its linked Pixi environment.
+3. runs R with `pixi run --as-is` through the project that owns the Pixi
+   environment: the base during initial setup, and the base again later when
+   the worktree links its `.pixi`;
+4. skips the project's R startup file except for guarded runs.
 
-Set `TARGETS_WORKTREE_RSCRIPT=/path/to/Rscript` for projects that do not use
-Pixi.
+`--as-is` never installs or updates an environment, so the launcher cannot
+rewrite a shared base environment to match an older worktree lock file. Install
+the environment with `pixi install` before configuring. Set
+`TARGETS_WORKTREE_RSCRIPT=/path/to/Rscript` for projects that do not use Pixi.
 
 The lock covers setup, conversion, reconciliation, target execution, and
 teardown. Raw `tar_make()` bypasses this protection and is unsupported in
@@ -95,8 +99,11 @@ under:
 <base configured store>/.snapshot/*
 ```
 
-When that directory contains multiple snapshot families, restrict discovery to
-one lexicographically sortable name family with a regular expression:
+Lexicographic order is only meaningful within one naming family. When that
+directory contains several families, such as daily snapshots beside rotating
+replication snapshots, restrict discovery to one sortable family with a regular
+expression; otherwise a short-lived snapshot can win. Snapshots expire, so a
+long-lived worktree can outlive its source:
 
 ```bash
 ... configure \
@@ -118,10 +125,18 @@ An explicit source must either be under a `.snapshot` path or have non-writable
 targets metadata. The live base store is always rejected. `--source` and
 `--snapshot-pattern` are mutually exclusive.
 
-If the base has `.pixi`, the tool links it into the worktree. An existing
-symlink to that exact environment is accepted but not claimed as tool-owned.
-Other existing paths fail closed. The immutable store supports target
-inspection while refusing pipeline writes.
+If the base has `.pixi` and the worktree has no environment of its own, the tool
+links the base environment into the worktree. An existing symlink to that exact
+environment is accepted but not claimed as tool-owned. Linking requires the
+worktree's `pixi.lock` to match the base's: otherwise Pixi would rewrite the
+shared environment the next time it runs in the worktree. Run `pixi install` in
+the worktree to give it its own environment instead; a worktree `.pixi`
+directory is used as it is. Other existing paths fail closed.
+
+Even with matching lock files, a linked worktree shares the base environment.
+Run Pixi there only with `--as-is` or `--frozen --no-install`, or through the
+launcher, so a later lock-file change cannot update the base environment. The
+immutable store supports target inspection while refusing pipeline writes.
 
 ## Convert to a selective writable store
 
@@ -221,7 +236,9 @@ git -C /path/to/pipeline-worktree \
 ```
 
 It records the mode, configured store, source, endpoint closure, managed links,
-and ownership of `.pixi` and runtime links.
+and ownership of `.pixi` and runtime links. Status reports a recorded source
+that no longer exists, such as an expired snapshot; conversion and runs that
+still depend on it refuse to continue until the worktree is reconfigured.
 
 ## Teardown
 
@@ -233,7 +250,8 @@ and ownership of `.pixi` and runtime links.
 Teardown:
 
 - refuses a live targets process;
-- removes only symlinks whose destinations and sources match recorded state;
+- removes only symlinks whose destinations and link text match recorded
+  state, including links whose snapshot has since expired;
 - moves a writable store atomically to
   `<worktree-parent>/.targets-worktree-quarantine/`;
 - saves a teardown receipt in the worktree's Git administrative directory;
@@ -262,7 +280,10 @@ R CMD check --no-manual targetsworktree_*.tar.gz
 The test creates a disposable nested-store targets project and verifies:
 
 - side-effect-free status checks before configuration;
+- per-command option validation;
 - the read-only default and explicit selective conversion;
+- expired-source reporting and teardown;
+- Pixi linking only for matching lock files, and worktree environments;
 - preservation of read-only state after failed conversion planning;
 - immutable source selection and live-store rejection;
 - exclusive launcher locking and foreign live-target PID rejection;

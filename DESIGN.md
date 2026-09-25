@@ -53,8 +53,9 @@ Every mutating operation must preserve these invariants:
    base store, or from an explicit source whose metadata is not writable.
 6. Existing regular files, directories, and unexpected symlinks are never
    replaced.
-7. Only symlinks recorded by this setup are removed, and only while they still
-   resolve to their recorded source.
+7. Only symlinks recorded by this setup are removed, and only while their link
+   text still names the recorded source. A link whose source has since
+   disappeared, such as an expired snapshot, therefore remains removable.
 8. Writable stores are quarantined, never deleted, during teardown.
 9. Setup, conversion, reconciliation, execution, and teardown are mutually
    exclusive for each worktree.
@@ -68,6 +69,25 @@ transient empty directory listings from virtual snapshot directories.
 The state record is stored in the worktree-specific Git administration
 directory. It therefore cannot be mistaken for pipeline output, copied into a
 selective store, or committed.
+
+Storage-managed snapshots expire. Status reports a recorded source that no
+longer exists, and conversion or reconciliation that still needs it fails with
+that reason rather than a path-resolution error. Teardown identifies managed
+links by their text, so it never depends on the source still existing.
+
+## Pixi environment
+
+A worktree linked to the base `.pixi` shares one environment with the base
+checkout and every pipeline running from it. Pixi installs an environment to
+match the lock file of the manifest it runs with, so a worktree lock that
+differs from the base would rewrite that shared environment. Configuration
+therefore links the base environment only when both lock files match, and uses
+a worktree's own `.pixi` directory as it is.
+
+The launcher runs R through `pixi run --as-is` with the manifest of the project
+that owns the environment: the base when the worktree links it. `--as-is`
+never installs or updates an environment. Pixi commands run by hand in a linked
+worktree are outside this protection and should use `--as-is` as well.
 
 ## Selective-store conversion
 
@@ -171,7 +191,9 @@ a conventional store name.
 The integration test is the executable contract. It covers nested stores,
 snapshot selection, read-only inspection, selective object and file reuse,
 dynamic branches, reconciliation, lock and process exclusion, path containment,
-rollback, immutable-source checksums, and quarantine-first teardown.
+rollback, expired sources, Pixi link rules, immutable-source checksums, and
+quarantine-first teardown. The Pixi launcher path is not exercised because the
+test uses `TARGETS_WORKTREE_RSCRIPT`.
 
 ## Deliberate boundaries
 

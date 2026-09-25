@@ -15,6 +15,11 @@ run <- function(command) {
   output
 }
 
+is_link <- function(path) {
+  value <- Sys.readlink(path)
+  !is.na(value) && nzchar(value)
+}
+
 test_root <- tempfile("targets-worktree-integration-")
 dir.create(test_root)
 withr::defer(
@@ -116,29 +121,29 @@ writeLines("runtime", runtime_source)
 
 launcher <- targetsworktree::targets_worktree_executable()
 rscript <- file.path(R.home("bin"), "Rscript")
-cli <- function(...) {
-  output <- system2(
+launch <- function(...) {
+  suppressWarnings(system2(
     launcher,
     c(...),
     stdout = TRUE,
     stderr = TRUE,
     env = paste0("TARGETS_WORKTREE_RSCRIPT=", rscript)
-  )
-  status <- attr(output, "status")
-  if (!is.null(status) && status != 0L) {
+  ))
+}
+cli <- function(...) {
+  output <- launch(...)
+  if (!is.null(attr(output, "status"))) {
     stop(paste(output, collapse = "\n"))
   }
   output
 }
+cli_failure <- function(...) {
+  output <- launch(...)
+  stopifnot(!is.null(attr(output, "status")))
+  output
+}
 
-unconfigured_status <- suppressWarnings(system2(
-  launcher,
-  c("status", "--project", worktree),
-  stdout = TRUE,
-  stderr = TRUE,
-  env = paste0("TARGETS_WORKTREE_RSCRIPT=", rscript)
-))
-stopifnot(!is.null(attr(unconfigured_status, "status")))
+unconfigured_status <- cli_failure("status", "--project", worktree)
 stopifnot(any(grepl("No targets-worktree state exists", unconfigured_status)))
 stopifnot(!file.exists(file.path(worktree, "pipeline", "outputs")))
 
@@ -150,11 +155,13 @@ invisible(cli(
 ))
 state <- read_state(worktree)
 stopifnot(identical(state$mode, "read-only"))
-stopifnot(nzchar(Sys.readlink(file.path(worktree, "pipeline", "outputs"))))
+stopifnot(is_link(file.path(worktree, "pipeline", "outputs")))
 stopifnot(identical(
   normalizePath(file.path(worktree, "runtime-link")),
   normalizePath(runtime_source)
 ))
+bad_option <- cli_failure("status", "--project", worktree, "--target", "large")
+stopifnot(any(grepl("Unexpected argument for status", bad_option, fixed = TRUE)))
 invisible(cli("teardown", "--project", worktree))
 stopifnot(is.null(read_state(worktree, required = FALSE)))
 stopifnot(!file.exists(file.path(worktree, "runtime-link")))
@@ -173,38 +180,48 @@ stopifnot(identical(state$snapshot_pattern, snapshot_pattern))
 stopifnot(any(grepl("^snapshot pattern:", pattern_status)))
 invisible(cli("teardown", "--project", worktree))
 
-missing_pattern_status <- suppressWarnings(system2(
-  launcher,
-  c(
-    "configure",
-    "--project", worktree,
-    "--base", base,
-    "--snapshot-pattern", "^missing-family-"
-  ),
-  stdout = TRUE,
-  stderr = TRUE,
-  env = paste0("TARGETS_WORKTREE_RSCRIPT=", rscript)
-))
-stopifnot(!is.null(attr(missing_pattern_status, "status")))
+missing_pattern_status <- cli_failure(
+  "configure",
+  "--project", worktree,
+  "--base", base,
+  "--snapshot-pattern", "^missing-family-"
+)
 stopifnot(any(grepl("matching pattern", missing_pattern_status, fixed = TRUE)))
 stopifnot(is.null(read_state(worktree, required = FALSE)))
 stopifnot(!file.exists(file.path(worktree, "pipeline", "outputs")))
 
-source_and_pattern_status <- suppressWarnings(system2(
-  launcher,
-  c(
-    "configure",
-    "--project", worktree,
-    "--base", base,
-    "--source", snapshot,
-    "--snapshot-pattern", "^snapshot-"
-  ),
-  stdout = TRUE,
-  stderr = TRUE,
-  env = paste0("TARGETS_WORKTREE_RSCRIPT=", rscript)
-))
-stopifnot(!is.null(attr(source_and_pattern_status, "status")))
+source_and_pattern_status <- cli_failure(
+  "configure",
+  "--project", worktree,
+  "--base", base,
+  "--source", snapshot,
+  "--snapshot-pattern", "^snapshot-"
+)
 stopifnot(any(grepl("either an explicit source", source_and_pattern_status)))
+stopifnot(is.null(read_state(worktree, required = FALSE)))
+
+# An expired snapshot leaves a dangling store link that teardown still removes.
+expiring_snapshot <- file.path(base_store, ".snapshot", "expiring")
+create_snapshot(expiring_snapshot)
+invisible(cli(
+  "configure",
+  "--project", worktree,
+  "--base", base,
+  "--source", expiring_snapshot
+))
+stopifnot(system2("chmod", c("-R", "u+w", expiring_snapshot)) == 0L)
+unlink(expiring_snapshot, recursive = TRUE)
+expired_status <- cli("status", "--project", worktree)
+stopifnot(any(grepl("^source status: +missing", expired_status)))
+expired_conversion <- cli_failure(
+  "convert",
+  "--project", worktree,
+  "--target", "large"
+)
+stopifnot(any(grepl("no longer exists", expired_conversion, fixed = TRUE)))
+stopifnot(identical(read_state(worktree)$mode, "read-only"))
+invisible(cli("teardown", "--project", worktree))
+stopifnot(!is_link(file.path(worktree, "pipeline", "outputs")))
 stopifnot(is.null(read_state(worktree, required = FALSE)))
 
 stopifnot(file.symlink(runtime_source, file.path(worktree, "adopted-link")))
@@ -216,58 +233,55 @@ invisible(cli(
 ))
 stopifnot(!read_state(worktree)$runtime_links$managed)
 invisible(cli("teardown", "--project", worktree))
-stopifnot(nzchar(Sys.readlink(file.path(worktree, "adopted-link"))))
+stopifnot(is_link(file.path(worktree, "adopted-link")))
 unlink(file.path(worktree, "adopted-link"))
 
-live_source_status <- suppressWarnings(system2(
-  launcher,
-  c(
-    "configure",
-    "--project", worktree,
-    "--base", base,
-    "--source", base_store
-  ),
-  stdout = TRUE,
-  stderr = TRUE,
-  env = paste0("TARGETS_WORKTREE_RSCRIPT=", rscript)
+# The base environment is linked only while both lock files match; a worktree
+# environment of its own is used as it is.
+dir.create(file.path(base, ".pixi"))
+writeLines("lock 1", file.path(base, "pixi.lock"))
+writeLines("lock 2", file.path(worktree, "pixi.lock"))
+lock_failure <- cli_failure("configure", "--project", worktree, "--base", base)
+stopifnot(any(grepl("pixi.lock differs", lock_failure, fixed = TRUE)))
+stopifnot(is.null(read_state(worktree, required = FALSE)))
+writeLines("lock 1", file.path(worktree, "pixi.lock"))
+invisible(cli("configure", "--project", worktree, "--base", base))
+stopifnot(is_link(file.path(worktree, ".pixi")))
+invisible(cli("teardown", "--project", worktree))
+stopifnot(!is_link(file.path(worktree, ".pixi")))
+dir.create(file.path(worktree, ".pixi"))
+writeLines("lock 2", file.path(worktree, "pixi.lock"))
+invisible(cli("configure", "--project", worktree, "--base", base))
+stopifnot(!is_link(file.path(worktree, ".pixi")))
+invisible(cli("teardown", "--project", worktree))
+stopifnot(dir.exists(file.path(worktree, ".pixi")))
+unlink(file.path(c(base, worktree), ".pixi"), recursive = TRUE)
+unlink(file.path(c(base, worktree), "pixi.lock"))
+
+invisible(cli_failure(
+  "configure",
+  "--project", worktree,
+  "--base", base,
+  "--source", base_store
 ))
-stopifnot(!is.null(attr(live_source_status, "status")))
 stopifnot(is.null(read_state(worktree, required = FALSE)))
 
 sentinel <- file.path(worktree, "pipeline", "outputs", "sentinel")
 dir.create(dirname(sentinel), recursive = TRUE)
 writeLines("preserve", sentinel)
-conflict_status <- suppressWarnings(system2(
-  launcher,
-  c(
-    "configure",
-    "--project", worktree,
-    "--base", base
-  ),
-  stdout = TRUE,
-  stderr = TRUE,
-  env = paste0("TARGETS_WORKTREE_RSCRIPT=", rscript)
-))
-stopifnot(!is.null(attr(conflict_status, "status")))
+invisible(cli_failure("configure", "--project", worktree, "--base", base))
 stopifnot(identical(readLines(sentinel), "preserve"))
 unlink(file.path(worktree, "pipeline", "outputs"), recursive = TRUE)
 
 outside <- file.path(test_root, "outside")
 dir.create(outside)
 stopifnot(file.symlink(outside, file.path(worktree, "escape")))
-escape_status <- suppressWarnings(system2(
-  launcher,
-  c(
-    "configure",
-    "--project", worktree,
-    "--base", base,
-    "--link", paste0("escape/new-link=", runtime_source)
-  ),
-  stdout = TRUE,
-  stderr = TRUE,
-  env = paste0("TARGETS_WORKTREE_RSCRIPT=", rscript)
+invisible(cli_failure(
+  "configure",
+  "--project", worktree,
+  "--base", base,
+  "--link", paste0("escape/new-link=", runtime_source)
 ))
-stopifnot(!is.null(attr(escape_status, "status")))
 stopifnot(!file.exists(file.path(outside, "new-link")))
 unlink(file.path(worktree, "escape"))
 
@@ -277,7 +291,7 @@ invisible(cli(
   "--base", base
 ))
 store <- file.path(worktree, "pipeline", "outputs")
-stopifnot(nzchar(Sys.readlink(store)))
+stopifnot(is_link(store))
 stopifnot(identical(normalizePath(store), normalizePath(snapshot)))
 stopifnot(identical(withr::with_dir(worktree, targets::tar_read(result)), 2001L))
 
@@ -296,36 +310,22 @@ holder <- processx::process$new(
   cleanup_tree = TRUE
 )
 Sys.sleep(0.2)
-locked_status <- suppressWarnings(system2(
-  launcher,
-  c("status", "--project", worktree),
-  stdout = TRUE,
-  stderr = TRUE,
-  env = paste0("TARGETS_WORKTREE_RSCRIPT=", rscript)
-))
-stopifnot(!is.null(attr(locked_status, "status")))
+invisible(cli_failure("status", "--project", worktree))
 invisible(holder$kill_tree())
 invisible(holder$wait(timeout = 1000))
 
-failed_conversion <- suppressWarnings(system2(
-  launcher,
-  c(
-    "convert",
-    "--project", worktree,
-    "--target", "target_that_does_not_exist"
-  ),
-  stdout = TRUE,
-  stderr = TRUE,
-  env = paste0("TARGETS_WORKTREE_RSCRIPT=", rscript)
+invisible(cli_failure(
+  "convert",
+  "--project", worktree,
+  "--target", "target_that_does_not_exist"
 ))
-stopifnot(!is.null(attr(failed_conversion, "status")))
 state <- read_state(worktree)
 stopifnot(identical(state$mode, "read-only"))
 stopifnot(identical(state$phase, "ready"))
-stopifnot(nzchar(Sys.readlink(store)))
+stopifnot(is_link(store))
 
 invisible(cli("teardown", "--project", worktree))
-stopifnot(!file.exists(store) && !dir.exists(store))
+stopifnot(!file.exists(store) && !is_link(store))
 
 invisible(cli(
   "configure",
@@ -357,8 +357,8 @@ state <- read_state(worktree)
 stopifnot(identical(state$mode, "writable-selective"))
 stopifnot(!"unrelated" %in% state$closure)
 stopifnot(any(!is.na(state$links$parent) & state$links$parent == "branch"))
-stopifnot(nzchar(Sys.readlink(file.path(store, "objects", "large"))))
-stopifnot(nzchar(Sys.readlink(file.path(store, "files", "input.txt"))))
+stopifnot(is_link(file.path(store, "objects", "large")))
+stopifnot(is_link(file.path(store, "files", "input.txt")))
 stopifnot(!file.exists(file.path(store, "objects", "unrelated")))
 
 foreign_process <- processx::process$new("sleep", "60", cleanup_tree = TRUE)
@@ -375,20 +375,13 @@ stopifnot(identical(
   as.integer(targets::tar_pid(store = store)),
   as.integer(foreign_process$get_pid())
 ))
-active_status <- suppressWarnings(system2(
-  launcher,
-  c(
-    "run",
-    "--project", worktree,
-    "--target", "result",
-    "--target", "branch_sum",
-    "--local"
-  ),
-  stdout = TRUE,
-  stderr = TRUE,
-  env = paste0("TARGETS_WORKTREE_RSCRIPT=", rscript)
+invisible(cli_failure(
+  "run",
+  "--project", worktree,
+  "--target", "result",
+  "--target", "branch_sum",
+  "--local"
 ))
-stopifnot(!is.null(attr(active_status, "status")))
 unlink(file.path(store, "meta", "process"))
 invisible(foreign_process$kill_tree())
 invisible(foreign_process$wait(timeout = 1000))
@@ -419,7 +412,7 @@ invisible(cli(
 
 scratch_input <- file.path(store, "files", "input.txt")
 stopifnot(is.null(read_state(worktree)$quarantine))
-stopifnot(!nzchar(Sys.readlink(scratch_input)))
+stopifnot(!is_link(scratch_input))
 stopifnot(identical(readLines(scratch_input), "worktree input"))
 stopifnot(identical(withr::with_dir(worktree, targets::tar_read(result)), 2011L))
 stopifnot(identical(
@@ -444,15 +437,18 @@ quarantine_line <- grep("^quarantine:", teardown, value = TRUE)
 stopifnot(length(quarantine_line) == 1L)
 quarantine <- trimws(sub("^quarantine:", "", quarantine_line))
 stopifnot(dir.exists(quarantine))
-stopifnot(!file.exists(store) && !dir.exists(store))
+stopifnot(!file.exists(store) && !is_link(store))
 stopifnot(is.null(read_state(worktree, required = FALSE)))
 
 cat(
   "targets-worktree integration passed\n",
   "  configured nested store: yes\n",
   "  read-only default and selective conversion: yes\n",
+  "  per-command option validation: yes\n",
+  "  expired snapshot reported and torn down: yes\n",
   "  failed conversion planning preserves read-only state: yes\n",
   "  managed/adopted runtime links: yes\n",
+  "  Pixi lock guard and worktree environment: yes\n",
   "  live source and conflicting path refused: yes\n",
   "  escaping symlink ancestor refused: yes\n",
   "  exclusive launcher lock: yes\n",
